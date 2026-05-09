@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
 const WatchlistSchema = new mongoose.Schema({
   userId: {
@@ -58,4 +58,4 @@ WatchlistSchema.statics.getOrCreateWatchlist = async function (userId) {
   return watchlist;
 };
 
-module.exports = mongoose.model("Watchlist", WatchlistSchema);
+export default mongoose.model("Watchlist", WatchlistSchema);

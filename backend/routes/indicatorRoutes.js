@@ -24,7 +24,7 @@ import {
 router.get("/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { interval = "1h", limit = 100 } = req.query;
+    const { interval = "1h", limit = 210 } = req.query;
 
     // Fetch candlestick data
     const klineData = await getKlines(
@@ -54,7 +54,7 @@ router.get("/:symbol", async (req, res) => {
 router.get("/:symbol/all", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { interval = "1h", limit = 100 } = req.query;
+    const { interval = "1h", limit = 210 } = req.query;
 
     // Fetch candlestick data
     const klineData = await getKlines(
@@ -84,7 +84,7 @@ router.get("/:symbol/all", async (req, res) => {
 router.get("/:symbol/rsi", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { interval = "1h", limit = 100, period = 14 } = req.query;
+    const { interval = "1h", limit = 210, period = 14 } = req.query;
 
     const klineData = await getKlines(
       symbol,
@@ -113,7 +113,7 @@ router.get("/:symbol/macd", async (req, res) => {
     const { symbol } = req.params;
     const {
       interval = "1h",
-      limit = 100,
+      limit = 210,
       fast = 12,
       slow = 26,
       signal = 9,
@@ -149,7 +149,7 @@ router.get("/:symbol/macd", async (req, res) => {
 router.get("/:symbol/moving-averages", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { interval = "1h", limit = 100, period = 20 } = req.query;
+    const { interval = "1h", limit = 210, period = 20 } = req.query;
 
     const klineData = await getKlines(
       symbol,
@@ -179,7 +179,7 @@ router.get("/:symbol/bollinger", async (req, res) => {
     const { symbol } = req.params;
     const {
       interval = "1h",
-      limit = 100,
+      limit = 210,
       period = 20,
       multiplier = 2,
     } = req.query;
@@ -215,7 +215,7 @@ router.get("/:symbol/stochastic", async (req, res) => {
     const { symbol } = req.params;
     const {
       interval = "1h",
-      limit = 100,
+      limit = 210,
       period = 14,
       smoothK = 3,
       smoothD = 3,

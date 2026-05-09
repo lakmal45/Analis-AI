@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -8,41 +9,62 @@ import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Layout from "./components/Layout";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
-import Dashboard from "./pages/Dashboard";
-import Analysis from "./pages/Analysis";
-import Watchlist from "./pages/Watchlist";
-import Signals from "./pages/Signals";
-import Chat from "./pages/Chat";
-import Settings from "./pages/Settings";
+import LoadingSkeleton from "./components/LoadingSkeleton";
+
+// Lazy load pages for better performance
+const Home = lazy(() => import("./pages/Home"));
+const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Analysis = lazy(() => import("./pages/Analysis"));
+const Watchlist = lazy(() => import("./pages/Watchlist"));
+const Signals = lazy(() => import("./pages/Signals"));
+const Chat = lazy(() => import("./pages/Chat"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Profile = lazy(() => import("./pages/Profile"));
+
+// Loading component for Suspense fallback
+const PageLoader = () => (
+  <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center">
+    <div className="text-center">
+      <div className="spinner mx-auto mb-4"></div>
+      <p className="text-gray-400">Loading...</p>
+    </div>
+  </div>
+);
 
 function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
         <Router>
-          <div className="App min-h-screen bg-gray-900">
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route
-                path="/"
-                element={
-                  <ProtectedRoute>
-                    <Layout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route path="dashboard" element={<Dashboard />} />
-                <Route path="analysis" element={<Analysis />} />
-                <Route path="watchlist" element={<Watchlist />} />
-                <Route path="signals" element={<Signals />} />
-                <Route path="chat" element={<Chat />} />
-                <Route path="settings" element={<Settings />} />
-                <Route index element={<Navigate to="/dashboard" replace />} />
-              </Route>
-            </Routes>
+          <div className="App min-h-screen bg-[#0a0e1a]">
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route path="/" element={<Home />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route
+                  path="/app"
+                  element={
+                    <ProtectedRoute>
+                      <Layout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="analysis" element={<Analysis />} />
+                  <Route path="watchlist" element={<Watchlist />} />
+                  <Route path="signals" element={<Signals />} />
+                  <Route path="chat" element={<Chat />} />
+                  <Route path="settings" element={<Settings />} />
+                  <Route path="profile" element={<Profile />} />
+                  <Route index element={<Navigate to="/app/dashboard" replace />} />
+                </Route>
+                {/* Legacy redirect */}
+                <Route path="/dashboard" element={<Navigate to="/app/dashboard" replace />} />
+              </Routes>
+            </Suspense>
           </div>
         </Router>
       </AuthProvider>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api from "../api/api";
 import { useSocket } from "../hooks/useSocket";
 import { useAuth } from "../context/AuthContext";
 
@@ -46,11 +46,7 @@ const Watchlist = () => {
   const fetchWatchlistData = async () => {
     try {
       setLoading(true);
-      const response = await axios.get("http://localhost:5000/api/watchlist", {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      });
+      const response = await api.get("/watchlist");
       setAssets(response.data.assets || []);
       setLoading(false);
     } catch (error) {
@@ -62,9 +58,7 @@ const Watchlist = () => {
 
   const fetchMarketOverview = async () => {
     try {
-      const response = await axios.get(
-        "http://localhost:5000/api/market/overview",
-      );
+      const response = await api.get("/market/overview");
       setAssets(response.data);
       setLoading(false);
     } catch (error) {
@@ -79,15 +73,7 @@ const Watchlist = () => {
 
     try {
       setAdding(true);
-      await axios.post(
-        "http://localhost:5000/api/watchlist/add",
-        { symbol: newSymbol.toUpperCase() },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        },
-      );
+      await api.post("/watchlist/add", { symbol: newSymbol.toUpperCase() });
 
       setNewSymbol("");
       fetchWatchlistData(); // Refresh list
@@ -101,14 +87,7 @@ const Watchlist = () => {
 
   const handleRemoveAsset = async (symbol) => {
     try {
-      await axios.delete(
-        `http://localhost:5000/api/watchlist/remove/${symbol}`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        },
-      );
+      await api.delete(`/watchlist/remove/${symbol}`);
 
       fetchWatchlistData(); // Refresh list
     } catch (error) {

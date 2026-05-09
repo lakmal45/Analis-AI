@@ -37,7 +37,7 @@ router.get("/ticker/:symbol", async (req, res) => {
 // @access  Public
 router.get("/klines/:symbol", async (req, res) => {
   try {
-    const { interval = "1h", limit = 100 } = req.query;
+    const { interval = "1h", limit = 210 } = req.query;
     const data = await getKlines(req.params.symbol, interval, parseInt(limit));
     res.json(data);
   } catch (error) {

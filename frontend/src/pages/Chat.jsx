@@ -1,5 +1,5 @@
 import { useState } from "react";
-import axios from "axios";
+import api from "../api/api";
 
 const Chat = () => {
   const [messages, setMessages] = useState([
@@ -23,7 +23,7 @@ const Chat = () => {
 
     try {
       // Send to backend AI service
-      const response = await axios.post("http://localhost:5000/api/ai/chat", {
+      const response = await api.post("/ai/chat", {
         message: userMessage,
         history: messages.slice(-10), // Send last 10 messages for context
       });

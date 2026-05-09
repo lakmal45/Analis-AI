@@ -45,11 +45,10 @@ class BinanceWebSocket {
         // Store latest data
         this.priceData.set(normalizedSymbol, priceData);
 
-        // Broadcast to all subscribers (Socket.IO clients)
+        // Broadcast to room subscribers only (not all clients)
         if (io) {
           io.to(`ticker-${normalizedSymbol}`).emit("price-update", priceData);
-          // Also emit to general ticker room
-          io.emit("ticker-update", priceData);
+          io.to(`ticker-${normalizedSymbol}`).emit("ticker-update", priceData);
         }
       } catch (error) {
         console.error(`Error parsing WebSocket data for ${symbol}:`, error);

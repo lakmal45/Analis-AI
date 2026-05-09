@@ -25,13 +25,14 @@ import {
   generateMarketAnalysisPrompt,
   generateChatPrompt,
 } from "../services/aiService.js";
+import { getLatestNews } from "../services/newsService.js";
 
 // @route   POST /api/ai/analyze
 // @desc    Get AI analysis for a symbol
 // @access  Public
 router.post("/analyze", async (req, res) => {
   try {
-    const { symbol = "BTCUSDT", interval = "1h", limit = 100 } = req.body;
+    const { symbol = "BTCUSDT", interval = "1h", limit = 210 } = req.body;
 
     // Fetch market data
     const marketData = await get24hTicker(symbol);
@@ -46,8 +47,11 @@ router.post("/analyze", async (req, res) => {
     // Calculate indicators
     const indicators = getLatestIndicators(klineData);
 
-    // Get AI analysis
-    const analysis = await analyzeMarket(marketData, indicators);
+    // Fetch latest news sentiment
+    const newsData = await getLatestNews(symbol);
+
+    // Get AI analysis with news data
+    const analysis = await analyzeMarket(marketData, indicators, newsData);
 
     res.json({
       symbol: symbol.toUpperCase(),
@@ -84,6 +88,14 @@ router.post("/chat", async (req, res) => {
 
     if (!message) {
       return res.status(400).json({ message: "Message is required" });
+    }
+
+    // Fetch news to inject into chat context if there's a marketContext symbol
+    let newsHeadlines = [];
+    if (marketContext && marketContext.symbol) {
+      const newsData = await getLatestNews(marketContext.symbol);
+      newsHeadlines = newsData.map(n => n.title);
+      marketContext.news = newsHeadlines;
     }
 
     // Get AI response

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart } from "lightweight-charts";
+import { createChart, LineSeries } from "lightweight-charts";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 const BollingerChart = ({
   symbol = "BTCUSDT",
@@ -19,7 +21,7 @@ const BollingerChart = ({
 
         // Fetch Bollinger Bands data from backend
         const response = await fetch(
-          `http://localhost:5000/api/indicators/${symbol}/bollinger?interval=${interval}&limit=100`,
+          `${API_URL}/api/indicators/${symbol}/bollinger?interval=${interval}&limit=100`,
         );
 
         if (!response.ok) {
@@ -64,7 +66,7 @@ const BollingerChart = ({
         // For now, just show the bands
 
         // Add Upper Band
-        const upperSeries = chart.addLineSeries({
+        const upperSeries = chart.addSeries(LineSeries, {
           color: "#ef4444",
           lineWidth: 1,
           lineStyle: 2, // Dashed
@@ -78,7 +80,7 @@ const BollingerChart = ({
         upperSeries.setData(upper);
 
         // Add Middle Band (SMA)
-        const middleSeries = chart.addLineSeries({
+        const middleSeries = chart.addSeries(LineSeries, {
           color: "#3b82f6",
           lineWidth: 2,
           priceFormat: {
@@ -91,7 +93,7 @@ const BollingerChart = ({
         middleSeries.setData(middle);
 
         // Add Lower Band
-        const lowerSeries = chart.addLineSeries({
+        const lowerSeries = chart.addSeries(LineSeries, {
           color: "#22c55e",
           lineWidth: 1,
           lineStyle: 2, // Dashed
@@ -136,28 +138,22 @@ const BollingerChart = ({
     fetchDataAndCreateChart();
   }, [symbol, interval, height]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-72 bg-gray-800 rounded-xl">
-        <div className="text-white">Loading Bollinger Bands chart...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-72 bg-gray-800 rounded-xl">
-        <div className="text-red-400">Error: {error}</div>
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-gray-800 rounded-xl p-4">
+    <div className="bg-gray-800 rounded-xl p-4 relative">
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-800 bg-opacity-80 rounded-xl">
+          <div className="text-white">Loading Bollinger Bands chart...</div>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-800 bg-opacity-80 rounded-xl">
+          <div className="text-red-400">Error: {error}</div>
+        </div>
+      )}
       <h4 className="text-md font-semibold mb-2">
         Bollinger Bands (20, 2) - {symbol.replace("USDT", "")}/USDT
       </h4>
-      <div ref={chartContainerRef} />
+      <div ref={chartContainerRef} style={{ minHeight: height }} />
     </div>
   );
 };

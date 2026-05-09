@@ -4,7 +4,7 @@ import RSIChart from "../components/charts/RSIChart";
 import MACDChart from "../components/charts/MACDChart";
 import BollingerChart from "../components/charts/BollingerChart";
 import StochasticChart from "../components/charts/StochasticChart";
-import axios from "axios";
+import api from "../api/api";
 import { useSocket } from "../hooks/useSocket";
 
 const Analysis = () => {
@@ -47,9 +47,7 @@ const Analysis = () => {
   const fetchMarketData = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(
-        `http://localhost:5000/api/market/ticker/${selectedSymbol}`,
-      );
+      const response = await api.get(`/market/ticker/${selectedSymbol}`);
       setMarketData(response.data);
       setLoading(false);
     } catch (error) {
@@ -61,9 +59,7 @@ const Analysis = () => {
   const fetchIndicators = async () => {
     try {
       setIndicatorsLoading(true);
-      const response = await axios.get(
-        `http://localhost:5000/api/indicators/${selectedSymbol}`,
-      );
+      const response = await api.get(`/indicators/${selectedSymbol}`);
       setIndicators(response.data.indicators);
       setIndicatorsLoading(false);
     } catch (error) {
@@ -82,14 +78,11 @@ const Analysis = () => {
       setAiLoading(true);
       setAiAnalysis(null);
 
-      const response = await axios.post(
-        "http://localhost:5000/api/ai/analyze",
-        {
-          symbol: selectedSymbol,
-          interval: "1h",
-          limit: 100,
-        },
-      );
+      const response = await api.post("/ai/analyze", {
+        symbol: selectedSymbol,
+        interval: "1h",
+        limit: 100,
+      });
 
       setAiAnalysis(response.data.analysis);
     } catch (error) {
@@ -254,6 +247,14 @@ const Analysis = () => {
                   <span className="font-medium text-blue-400">
                     {indicators.sma20
                       ? `$${indicators.sma20.toFixed(2)}`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">SMA 200</span>
+                  <span className="font-medium text-purple-400">
+                    {indicators.sma200
+                      ? `$${indicators.sma200.toFixed(2)}`
                       : "--"}
                   </span>
                 </div>

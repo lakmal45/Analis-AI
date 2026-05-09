@@ -1,14 +1,23 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 
+const SOCKET_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
 export const useSocket = () => {
   const socketRef = useRef(null);
   const [isConnected, setIsConnected] = useState(false);
   const [priceUpdates, setPriceUpdates] = useState({});
 
+  // Single shared handler for price updates
+  const priceHandler = useCallback((data) => {
+    setPriceUpdates((prev) => ({
+      ...prev,
+      [data.symbol]: data,
+    }));
+  }, []);
+
   useEffect(() => {
-    // Initialize Socket.IO connection
-    const socket = io("http://localhost:5000", {
+    const socket = io(SOCKET_URL, {
       transports: ["websocket"],
       autoConnect: true,
     });
@@ -29,35 +38,27 @@ export const useSocket = () => {
       console.error("Socket.IO connection error:", error);
     });
 
-    // Cleanup on unmount
-    return () => {
-      if (socket) {
-        socket.disconnect();
-      }
-    };
-  }, []);
+    // Register price update listeners ONCE
+    socket.on("price-update", priceHandler);
+    socket.on("ticker-update", priceHandler);
 
-  // Subscribe to a single ticker
+    return () => {
+      socket.off("price-update", priceHandler);
+      socket.off("ticker-update", priceHandler);
+      socket.disconnect();
+    };
+  }, [priceHandler]);
+
+  // Subscribe to a single ticker (no listener stacking)
   const subscribeToTicker = useCallback(
     (symbol) => {
       if (socketRef.current && isConnected) {
         socketRef.current.emit("subscribe-ticker", symbol);
-
-        // Listen for price updates for this symbol
-        socketRef.current.on(`price-update`, (data) => {
-          if (data.symbol === symbol) {
-            setPriceUpdates((prev) => ({
-              ...prev,
-              [symbol]: data,
-            }));
-          }
-        });
       }
     },
     [isConnected],
   );
 
-  // Unsubscribe from a ticker
   const unsubscribeFromTicker = useCallback(
     (symbol) => {
       if (socketRef.current && isConnected) {
@@ -67,36 +68,22 @@ export const useSocket = () => {
     [isConnected],
   );
 
-  // Subscribe to multiple tickers (for watchlist)
+  // Subscribe to multiple tickers (no listener stacking)
   const subscribeToWatchlist = useCallback(
     (symbols) => {
       if (socketRef.current && isConnected) {
         socketRef.current.emit("subscribe-watchlist", symbols);
-
-        // Listen for all ticker updates
-        socketRef.current.on("ticker-update", (data) => {
-          setPriceUpdates((prev) => ({
-            ...prev,
-            [data.symbol]: data,
-          }));
-        });
       }
     },
     [isConnected],
   );
 
-  // Generic event listener
   const on = useCallback((event, callback) => {
-    if (socketRef.current) {
-      socketRef.current.on(event, callback);
-    }
+    if (socketRef.current) socketRef.current.on(event, callback);
   }, []);
 
-  // Remove event listener
   const off = useCallback((event, callback) => {
-    if (socketRef.current) {
-      socketRef.current.off(event, callback);
-    }
+    if (socketRef.current) socketRef.current.off(event, callback);
   }, []);
 
   return {

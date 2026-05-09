@@ -227,6 +227,7 @@ const calculateAllIndicators = (klineData) => {
 
   return {
     sma20: calculateSMA(klineData, 20),
+    sma200: calculateSMA(klineData, 200),
     ema20: calculateEMA(klineData, 20),
     rsi14: calculateRSI(klineData, 14),
     macd: calculateMACD(klineData, 12, 26, 9),
@@ -235,6 +236,7 @@ const calculateAllIndicators = (klineData) => {
     latest: {
       price: klineData[klineData.length - 1].close,
       sma20: null,
+      sma200: null,
       ema20: null,
       rsi14: null,
       macd: null,
@@ -251,6 +253,7 @@ const getLatestIndicators = (klineData) => {
   }
 
   const sma20 = calculateSMA(klineData, 20);
+  const sma200 = klineData.length >= 200 ? calculateSMA(klineData, 200) : [];
   const ema20 = calculateEMA(klineData, 20);
   const rsi14 = calculateRSI(klineData, 14);
   const macd = calculateMACD(klineData, 12, 26, 9);
@@ -260,6 +263,7 @@ const getLatestIndicators = (klineData) => {
   return {
     price: klineData[klineData.length - 1].close,
     sma20: sma20.length > 0 ? sma20[sma20.length - 1].value : null,
+    sma200: sma200.length > 0 ? sma200[sma200.length - 1].value : null,
     ema20: ema20.length > 0 ? ema20[ema20.length - 1].value : null,
     rsi14: rsi14.length > 0 ? rsi14[rsi14.length - 1].value : null,
     macd: {

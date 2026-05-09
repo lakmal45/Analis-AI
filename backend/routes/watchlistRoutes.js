@@ -1,8 +1,9 @@
-const express = require("express");
+import express from "express";
+import Watchlist from "../models/Watchlist.js";
+import { protect } from "../middleware/authMiddleware.js";
+import marketService from "../services/marketService.js";
+
 const router = express.Router();
-const Watchlist = require("../models/Watchlist");
-const { protect } = require("../middleware/authMiddleware");
-const marketService = require("../services/marketService");
 
 // @route   GET /api/watchlist
 // @desc    Get user's watchlist with live market data
@@ -18,22 +19,37 @@ router.get("/", protect, async (req, res) => {
       return res.json({ assets: [] });
     }
 
-    // Fetch live market data for all symbols
-    const marketData = await marketService.getMarketOverview();
-    const watchlistData = marketData.filter((item) =>
-      symbols.includes(item.symbol),
+    // Fetch live market data for each symbol individually
+    const watchlistData = await Promise.all(
+      symbols.map(async (symbol) => {
+        try {
+          const ticker = await marketService.get24hTicker(symbol);
+          return {
+            symbol: ticker.symbol,
+            price: parseFloat(ticker.lastPrice),
+            change24h: parseFloat(ticker.priceChangePercent),
+            volume24h: parseFloat(ticker.volume),
+            high24h: parseFloat(ticker.highPrice),
+            low24h: parseFloat(ticker.lowPrice),
+          };
+        } catch (error) {
+          // Return basic info if ticker fetch fails for this symbol
+          return {
+            symbol,
+            price: null,
+            change24h: null,
+            volume24h: null,
+            high24h: null,
+            low24h: null,
+            error: "Price unavailable",
+          };
+        }
+      }),
     );
 
     res.json({
       _id: watchlist._id,
-      assets: watchlistData.map((item) => ({
-        symbol: item.symbol,
-        price: item.price,
-        change24h: item.change24h,
-        volume24h: item.volume24h,
-        high24h: item.high24h,
-        low24h: item.low24h,
-      })),
+      assets: watchlistData,
     });
   } catch (error) {
     console.error("Error fetching watchlist:", error);
@@ -104,4 +120,4 @@ router.delete("/clear", protect, async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

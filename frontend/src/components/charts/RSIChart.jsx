@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart } from "lightweight-charts";
+import { createChart, LineSeries } from "lightweight-charts";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
   const chartContainerRef = useRef(null);
@@ -15,7 +17,7 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
 
         // Fetch RSI data from backend
         const response = await fetch(
-          `http://localhost:5000/api/indicators/${symbol}/rsi?interval=${interval}&limit=100`,
+          `${API_URL}/api/indicators/${symbol}/rsi?interval=${interval}&limit=100`,
         );
 
         if (!response.ok) {
@@ -57,7 +59,7 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
         });
 
         // Add RSI line series
-        const rsiSeries = chart.addLineSeries({
+        const rsiSeries = chart.addSeries(LineSeries, {
           color: "#eab308",
           lineWidth: 2,
           priceFormat: {
@@ -70,7 +72,7 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
         rsiSeries.setData(rsiData);
 
         // Add overbought/oversold lines
-        const overboughtLine = chart.addLineSeries({
+        const overboughtLine = chart.addSeries(LineSeries, {
           color: "#ef4444",
           lineWidth: 1,
           lineStyle: 2, // Dashed
@@ -80,7 +82,7 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
           },
         });
 
-        const oversoldLine = chart.addLineSeries({
+        const oversoldLine = chart.addSeries(LineSeries, {
           color: "#22c55e",
           lineWidth: 1,
           lineStyle: 2, // Dashed
@@ -132,28 +134,22 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
     fetchDataAndCreateChart();
   }, [symbol, interval, height]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-48 bg-gray-800 rounded-xl">
-        <div className="text-white">Loading RSI chart...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-48 bg-gray-800 rounded-xl">
-        <div className="text-red-400">Error: {error}</div>
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-gray-800 rounded-xl p-4">
+    <div className="bg-gray-800 rounded-xl p-4 relative">
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-800 bg-opacity-80 rounded-xl">
+          <div className="text-white">Loading RSI chart...</div>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-800 bg-opacity-80 rounded-xl">
+          <div className="text-red-400">Error: {error}</div>
+        </div>
+      )}
       <h4 className="text-md font-semibold mb-2">
         RSI (14) - {symbol.replace("USDT", "")}/USDT
       </h4>
-      <div ref={chartContainerRef} />
+      <div ref={chartContainerRef} style={{ minHeight: height }} />
     </div>
   );
 };
