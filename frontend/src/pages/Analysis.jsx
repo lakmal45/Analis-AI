@@ -48,7 +48,7 @@ const Analysis = () => {
     try {
       setLoading(true);
       const response = await api.get(`/market/ticker/${selectedSymbol}`);
-      setMarketData(response.data.data || response.data);
+      setMarketData(response.data);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching market data:", error);
@@ -60,8 +60,7 @@ const Analysis = () => {
     try {
       setIndicatorsLoading(true);
       const response = await api.get(`/indicators/${selectedSymbol}`);
-      const indicatorData = response.data.data || response.data;
-      setIndicators(indicatorData.indicators);
+      setIndicators(response.data.indicators);
       setIndicatorsLoading(false);
     } catch (error) {
       console.error("Error fetching indicators:", error);
@@ -85,8 +84,7 @@ const Analysis = () => {
         limit: 100,
       });
 
-      const aiData = response.data.data || response.data;
-      setAiAnalysis(aiData.analysis);
+      setAiAnalysis(response.data.analysis);
     } catch (error) {
       console.error("Error getting AI analysis:", error);
       alert("Failed to get AI analysis. Please check your OpenRouter API key.");
