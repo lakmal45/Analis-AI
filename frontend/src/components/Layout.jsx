@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
-import { useTheme } from "../context/ThemeContext";
+import { useAuth } from "../context/useAuth";
+import { useTheme } from "../context/useTheme";
 import api from "../api/api";
 
 const Layout = () => {
@@ -24,11 +24,6 @@ const Layout = () => {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
-
-  // Close mobile sidebar on route change
-  useEffect(() => {
-    setMobileSidebarOpen(false);
-  }, [location.pathname]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -124,7 +119,7 @@ const Layout = () => {
   const currentPage = navItems.find((item) => location.pathname.startsWith(item.path));
   const pageTitle = currentPage?.label || "Dashboard";
 
-  const SidebarContent = () => (
+  const renderSidebarContent = () => (
     <>
       {/* Logo */}
       <div className="h-16 flex items-center gap-3 px-5 border-b border-white/[0.06] shrink-0">
@@ -144,6 +139,7 @@ const Layout = () => {
           <NavLink
             key={item.path}
             to={item.path}
+            onClick={() => setMobileSidebarOpen(false)}
             className={({ isActive }) =>
               `group flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
                 isActive
@@ -208,7 +204,7 @@ const Layout = () => {
       <aside
         className={`hidden lg:flex ${sidebarOpen ? "w-60" : "w-[72px]"} bg-[#0d1225]/80 backdrop-blur-xl border-r border-white/[0.06] transition-all duration-300 flex-col shrink-0 relative z-30`}
       >
-        <SidebarContent />
+        {renderSidebarContent()}
       </aside>
 
       {/* Sidebar — Mobile */}
@@ -217,7 +213,7 @@ const Layout = () => {
           mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <SidebarContent />
+        {renderSidebarContent()}
       </aside>
 
       {/* Main Content Area */}
@@ -309,7 +305,10 @@ const Layout = () => {
                   </div>
                   <NavLink
                     to="/app/profile"
-                    onClick={() => setDropdownOpen(false)}
+                    onClick={() => {
+                      setDropdownOpen(false);
+                      setMobileSidebarOpen(false);
+                    }}
                     className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.04] transition-all"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -319,7 +318,10 @@ const Layout = () => {
                   </NavLink>
                   <NavLink
                     to="/app/settings"
-                    onClick={() => setDropdownOpen(false)}
+                    onClick={() => {
+                      setDropdownOpen(false);
+                      setMobileSidebarOpen(false);
+                    }}
                     className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.04] transition-all"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

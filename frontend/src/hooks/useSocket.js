@@ -87,7 +87,6 @@ export const useSocket = () => {
   }, []);
 
   return {
-    socket: socketRef.current,
     isConnected,
     priceUpdates,
     subscribeToTicker,

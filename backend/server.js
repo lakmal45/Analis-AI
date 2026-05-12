@@ -86,11 +86,13 @@ app.get("/", (req, res) => {
 // Socket.IO connection
 io.on("connection", (socket) => {
   console.log("New client connected:", socket.id);
+  socket.data.subscribedSymbols = new Set();
 
   // Subscribe to symbol updates
   socket.on("subscribe-ticker", (symbol) => {
     console.log(`Client ${socket.id} subscribing to ${symbol}`);
     socket.join(`ticker-${symbol.toLowerCase()}`);
+    socket.data.subscribedSymbols.add(symbol.toLowerCase());
 
     // Start Binance WebSocket for this symbol if not already started
     binanceWS.subscribeToSymbol(symbol, io);
@@ -106,6 +108,8 @@ io.on("connection", (socket) => {
   socket.on("unsubscribe-ticker", (symbol) => {
     console.log(`Client ${socket.id} unsubscribing from ${symbol}`);
     socket.leave(`ticker-${symbol.toLowerCase()}`);
+    socket.data.subscribedSymbols.delete(symbol.toLowerCase());
+    binanceWS.unsubscribeFromSymbol(symbol);
   });
 
   // Subscribe to multiple tickers (for watchlist)
@@ -113,11 +117,15 @@ io.on("connection", (socket) => {
     console.log(`Client ${socket.id} subscribing to watchlist:`, symbols);
     symbols.forEach((symbol) => {
       socket.join(`ticker-${symbol.toLowerCase()}`);
+      socket.data.subscribedSymbols.add(symbol.toLowerCase());
       binanceWS.subscribeToSymbol(symbol, io);
     });
   });
 
   socket.on("disconnect", () => {
+    for (const symbol of socket.data.subscribedSymbols) {
+      binanceWS.unsubscribeFromSymbol(symbol);
+    }
     console.log("Client disconnected:", socket.id);
   });
 });
@@ -130,6 +138,10 @@ import {
   startSignalGenerator,
   stopSignalGenerator,
 } from "./services/signalGenerator.js";
+import {
+  startSignalResolutionJob,
+  stopSignalResolutionJob,
+} from "./services/signalService.js";
 
 // Global error handler middleware
 app.use((err, req, res, next) => {
@@ -151,12 +163,14 @@ server.listen(PORT, () => {
 
   // Start AI signal generator (runs every 60 minutes to save API costs)
   startSignalGenerator(60);
+  startSignalResolutionJob(5);
 });
 
 // Handle graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
   stopSignalGenerator();
+  stopSignalResolutionJob();
   binanceWS.closeAll();
   server.close(() => {
     console.log("HTTP server closed");
@@ -166,6 +180,7 @@ process.on("SIGTERM", () => {
 process.on("SIGINT", () => {
   console.log("SIGINT signal received: closing HTTP server");
   stopSignalGenerator();
+  stopSignalResolutionJob();
   binanceWS.closeAll();
   server.close(() => {
     console.log("HTTP server closed");

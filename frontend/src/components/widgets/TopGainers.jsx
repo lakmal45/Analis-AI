@@ -7,31 +7,38 @@ const TopGainers = ({ limit = 5 }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchTopGainers();
-  }, []);
+    let isMounted = true;
 
-  const fetchTopGainers = async () => {
-    try {
-      const response = await api.get("/market/overview");
-      const data = response.data;
-
-      // Sort by 24h change and get top gainers
-      const sorted =
-        (Array.isArray(data) ? data : data.data || [])
+    const fetchTopGainers = async () => {
+      try {
+        const response = await api.get("/market/overview");
+        const data = response.data;
+        const sorted = (Array.isArray(data) ? data : data.data || [])
           .sort((a, b) => b.change24h - a.change24h)
           .slice(0, limit);
 
-      setGainers(sorted);
-    } catch (error) {
-      console.error("Error fetching top gainers:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+        if (isMounted) {
+          setGainers(sorted);
+        }
+      } catch (error) {
+        console.error("Error fetching top gainers:", error);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchTopGainers();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [limit]);
 
   return (
     <GlassCard className="p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">🚀 Top Gainers</h3>
+      <h3 className="text-lg font-semibold text-white mb-4">Top Gainers</h3>
 
       {loading ? (
         <div className="space-y-3">

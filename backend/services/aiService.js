@@ -6,8 +6,7 @@ const aiCache = new NodeCache({ stdTTL: 300, checkperiod: 320 });
 
 // OpenRouter API configuration
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_API_KEY =
-  process.env.OPENROUTER_API_KEY || "your_openrouter_api_key_here";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 // Available models (you can change this)
 const MODEL = "openai/gpt-oss-120b"; // OpenAI GPT-OSS-120B
@@ -19,7 +18,18 @@ const MODEL = "openai/gpt-oss-120b"; // OpenAI GPT-OSS-120B
  * @param {number} maxTokens - Maximum tokens in response
  * @returns {Promise<string>} AI response
  */
-const getAIResponse = async (systemPrompt, userPrompt, maxTokens = 1000) => {
+const getAIResponse = async (
+  systemPrompt,
+  userPrompt,
+  maxTokens = 1000,
+  options = {},
+) => {
+  const { responseFormat = "json_object", history = [] } = options;
+
+  if (!OPENROUTER_API_KEY) {
+    throw new Error("AI provider is not configured");
+  }
+
   try {
     const response = await axios.post(
       OPENROUTER_API_URL,
@@ -27,11 +37,12 @@ const getAIResponse = async (systemPrompt, userPrompt, maxTokens = 1000) => {
         model: MODEL,
         messages: [
           { role: "system", content: systemPrompt },
+          ...history,
           { role: "user", content: userPrompt },
         ],
         max_tokens: maxTokens,
         temperature: 0.7,
-        response_format: { type: "json_object" },
+        ...(responseFormat ? { response_format: { type: responseFormat } } : {}),
       },
       {
         headers: {
@@ -43,7 +54,7 @@ const getAIResponse = async (systemPrompt, userPrompt, maxTokens = 1000) => {
       },
     );
 
-    return response.data.choices[0].message.content;
+    return response.data?.choices?.[0]?.message?.content ?? null;
   } catch (error) {
     console.error(
       "OpenRouter API Error:",
@@ -148,9 +159,15 @@ Provide a helpful, concise response. If discussing trading, always include risk 
  * @param {Array} newsData - Recent news articles
  * @returns {Promise<object>} Analysis result
  */
-const analyzeMarket = async (marketData, indicators, newsData = []) => {
+const analyzeMarket = async (
+  marketData,
+  indicators,
+  newsData = [],
+  options = {},
+) => {
+  const { interval = "1h" } = options;
   // Use symbol and a generic 'analysis' string as cache key. We can add timeframe if passed later.
-  const cacheKey = `analysis_${marketData.symbol}`;
+  const cacheKey = `analysis_${marketData.symbol}_${interval}`;
   const cachedAnalysis = aiCache.get(cacheKey);
   
   if (cachedAnalysis) {
@@ -163,10 +180,19 @@ const analyzeMarket = async (marketData, indicators, newsData = []) => {
   const userPrompt = generateMarketAnalysisPrompt(marketData, indicators, newsData);
 
   try {
-    const response = await getAIResponse(systemPrompt, userPrompt, 500);
+    const response = await getAIResponse(systemPrompt, userPrompt, 500, {
+      responseFormat: "json_object",
+    });
+    const normalizedResponse =
+      typeof response === "string"
+        ? response
+        : response == null
+          ? ""
+          : JSON.stringify(response);
+
     let result;
     // Try to parse JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    const jsonMatch = normalizedResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       result = JSON.parse(jsonMatch[0]);
     } else {
@@ -177,7 +203,8 @@ const analyzeMarket = async (marketData, indicators, newsData = []) => {
         support: 0,
         resistance: 0,
         recommendation: "Hold",
-        explanation: response,
+        explanation:
+          normalizedResponse || "AI provider returned an empty response.",
       };
     }
     
@@ -201,9 +228,19 @@ const getChatResponse = async (message, history = [], marketContext = null) => {
   const systemPrompt =
     "You are an AI trading assistant for AnalisAI. Provide helpful, accurate trading advice. Always include risk warnings for trading recommendations.";
   const userPrompt = generateChatPrompt(message, marketContext);
+  const sanitizedHistory = history
+    .filter((entry) => entry?.role === "user" || entry?.role === "assistant")
+    .slice(-10)
+    .map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+    }));
 
   try {
-    return await getAIResponse(systemPrompt, userPrompt, 1000);
+    return await getAIResponse(systemPrompt, userPrompt, 1000, {
+      responseFormat: null,
+      history: sanitizedHistory,
+    });
   } catch (error) {
     console.error("Error in chat response:", error);
     throw error;

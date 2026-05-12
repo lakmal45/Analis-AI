@@ -54,6 +54,8 @@ PortfolioSchema.methods.addHolding = async function (
   symbol,
   quantity,
   buyPrice,
+  buyDate = new Date(),
+  notes = "",
 ) {
   // Check if holding already exists
   const existingIndex = this.holdings.findIndex(
@@ -74,7 +76,8 @@ PortfolioSchema.methods.addHolding = async function (
       symbol: symbol.toUpperCase(),
       quantity,
       buyPrice,
-      buyDate: new Date(),
+      buyDate,
+      notes,
     });
   }
 

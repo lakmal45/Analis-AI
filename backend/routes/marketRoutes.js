@@ -6,6 +6,7 @@ import {
   getKlines,
   getMultiplePrices,
   getMarketOverview,
+  getSearchableSymbols,
 } from "../services/marketService.js";
 
 // @route   GET /api/market/price/:symbol
@@ -51,6 +52,18 @@ router.get("/klines/:symbol", async (req, res) => {
 router.get("/overview", async (req, res) => {
   try {
     const data = await getMarketOverview();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   GET /api/market/symbols
+// @desc    Get searchable trading symbols
+// @access  Public
+router.get("/symbols", async (req, res) => {
+  try {
+    const data = await getSearchableSymbols();
     res.json(data);
   } catch (error) {
     res.status(500).json({ message: error.message });

@@ -5,6 +5,36 @@ import marketService from "../services/marketService.js";
 
 const router = express.Router();
 
+const normalizeWatchlistAssets = async (watchlist) => {
+  const normalizedSymbols = [];
+  const seenSymbols = new Set();
+
+  for (const asset of watchlist.assets) {
+    const resolvedSymbol = await marketService.resolveToMarketSymbol(asset.symbol);
+    if (resolvedSymbol && !seenSymbols.has(resolvedSymbol)) {
+      normalizedSymbols.push({
+        symbol: resolvedSymbol,
+        addedAt: asset.addedAt || new Date(),
+      });
+      seenSymbols.add(resolvedSymbol);
+    }
+  }
+
+  const hasChanges =
+    normalizedSymbols.length !== watchlist.assets.length ||
+    normalizedSymbols.some(
+      (asset, index) =>
+        asset.symbol !== watchlist.assets[index]?.symbol,
+    );
+
+  if (hasChanges) {
+    watchlist.assets = normalizedSymbols;
+    await watchlist.save();
+  }
+
+  return normalizedSymbols.map((asset) => asset.symbol);
+};
+
 // @route   GET /api/watchlist
 // @desc    Get user's watchlist with live market data
 // @access  Private
@@ -12,40 +42,38 @@ router.get("/", protect, async (req, res) => {
   try {
     const watchlist = await Watchlist.getOrCreateWatchlist(req.user.id);
 
-    // Get symbols from watchlist
-    const symbols = watchlist.assets.map((asset) => asset.symbol);
+    const symbols = await normalizeWatchlistAssets(watchlist);
 
     if (symbols.length === 0) {
       return res.json({ assets: [] });
     }
 
     // Fetch live market data for each symbol individually
-    const watchlistData = await Promise.all(
-      symbols.map(async (symbol) => {
-        try {
-          const ticker = await marketService.get24hTicker(symbol);
-          return {
-            symbol: ticker.symbol,
-            price: parseFloat(ticker.lastPrice),
-            change24h: parseFloat(ticker.priceChangePercent),
-            volume24h: parseFloat(ticker.volume),
-            high24h: parseFloat(ticker.highPrice),
-            low24h: parseFloat(ticker.lowPrice),
-          };
-        } catch (error) {
-          // Return basic info if ticker fetch fails for this symbol
-          return {
-            symbol,
-            price: null,
-            change24h: null,
-            volume24h: null,
-            high24h: null,
-            low24h: null,
-            error: "Price unavailable",
-          };
-        }
-      }),
-    );
+    const tickers = await marketService.getMultiple24hTickers(symbols);
+    const tickerMap = new Map(tickers.map((ticker) => [ticker.symbol, ticker]));
+    const watchlistData = symbols.map((symbol) => {
+      const ticker = tickerMap.get(symbol);
+      if (!ticker) {
+        return {
+          symbol,
+          price: null,
+          change24h: null,
+          volume24h: null,
+          high24h: null,
+          low24h: null,
+          error: "Price unavailable",
+        };
+      }
+
+      return {
+        symbol: ticker.symbol,
+        price: parseFloat(ticker.lastPrice),
+        change24h: parseFloat(ticker.priceChangePercent),
+        volume24h: parseFloat(ticker.volume),
+        high24h: parseFloat(ticker.highPrice),
+        low24h: parseFloat(ticker.lowPrice),
+      };
+    });
 
     res.json({
       _id: watchlist._id,
@@ -68,8 +96,13 @@ router.post("/add", protect, async (req, res) => {
       return res.status(400).json({ message: "Symbol is required" });
     }
 
+    const resolvedSymbol = await marketService.resolveToMarketSymbol(symbol);
+    if (!resolvedSymbol) {
+      return res.status(400).json({ message: "Invalid or unsupported symbol" });
+    }
+
     const watchlist = await Watchlist.getOrCreateWatchlist(req.user.id);
-    await watchlist.addAsset(symbol.toUpperCase());
+    await watchlist.addAsset(resolvedSymbol);
 
     res.json({
       message: "Asset added to watchlist",
@@ -87,9 +120,11 @@ router.post("/add", protect, async (req, res) => {
 router.delete("/remove/:symbol", protect, async (req, res) => {
   try {
     const { symbol } = req.params;
+    const resolvedSymbol =
+      (await marketService.resolveToMarketSymbol(symbol)) || symbol.toUpperCase();
 
     const watchlist = await Watchlist.getOrCreateWatchlist(req.user.id);
-    await watchlist.removeAsset(symbol.toUpperCase());
+    await watchlist.removeAsset(resolvedSymbol);
 
     res.json({
       message: "Asset removed from watchlist",

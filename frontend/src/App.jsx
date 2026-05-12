@@ -5,11 +5,10 @@ import {
   Route,
   Navigate,
 } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
-import { ThemeProvider } from "./context/ThemeContext";
+import { AuthProvider } from "./context/AuthContext.jsx";
+import { ThemeProvider } from "./context/ThemeContext.jsx";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Layout from "./components/Layout";
-import LoadingSkeleton from "./components/LoadingSkeleton";
 
 // Lazy load pages for better performance
 const Home = lazy(() => import("./pages/Home"));

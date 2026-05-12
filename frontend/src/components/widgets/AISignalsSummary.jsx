@@ -7,19 +7,29 @@ const AISignalsSummary = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchSignals();
-  }, []);
+    let isMounted = true;
 
-  const fetchSignals = async () => {
-    try {
-      const response = await api.get("/signals?limit=5");
-      setSignals(response.data.data || []);
-    } catch (error) {
-      console.error("Error fetching signals:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const fetchSignals = async () => {
+      try {
+        const response = await api.get("/signals?limit=5");
+        if (isMounted) {
+          setSignals(response.data.data || []);
+        }
+      } catch (error) {
+        console.error("Error fetching signals:", error);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchSignals();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const getSignalIcon = (type) => {
     switch (type) {
@@ -49,7 +59,7 @@ const AISignalsSummary = () => {
 
   return (
     <GlassCard className="p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">🤖 AI Signals</h3>
+      <h3 className="text-lg font-semibold text-white mb-4">AI Futures Signals</h3>
 
       {loading ? (
         <div className="space-y-3">
@@ -74,7 +84,7 @@ const AISignalsSummary = () => {
                     {signal.symbol}
                   </p>
                   <p className={`text-xs ${getSignalColor(signal.type)}`}>
-                    {signal.type}
+                    {signal.type} | {signal.leverage || 1}x
                   </p>
                 </div>
               </div>
@@ -91,7 +101,7 @@ const AISignalsSummary = () => {
 
           {signals.length === 0 && (
             <p className="text-gray-400 text-sm text-center py-4">
-              No active signals
+              No active futures signals
             </p>
           )}
 

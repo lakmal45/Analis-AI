@@ -28,7 +28,7 @@ export const getLatestNews = async (symbol) => {
       }
     });
 
-    if (response.data && response.data.Data) {
+    if (Array.isArray(response.data?.Data)) {
       // Extract top 5 headlines and summaries
       const articles = response.data.Data.slice(0, 5).map(article => ({
         title: article.title,
@@ -40,6 +40,10 @@ export const getLatestNews = async (symbol) => {
       newsCache.set(cacheKey, articles);
       return articles;
     }
+
+    console.warn(
+      `Unexpected news response format for ${symbol}: expected Data to be an array`,
+    );
 
     return [];
   } catch (error) {

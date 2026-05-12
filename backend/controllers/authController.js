@@ -108,12 +108,36 @@ const updateUserProfile = async (req, res) => {
     }
 
     const { username, email } = req.body;
-    if (username) user.username = username;
+    if (username && username !== user.username) {
+      const usernameExists = await User.findOne({
+        username,
+        _id: { $ne: user._id },
+      });
+
+      if (usernameExists) {
+        return res.status(400).json({ message: "Username already in use" });
+      }
+
+      user.username = username;
+    }
+
     if (email) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(email)) {
         return res.status(400).json({ message: "Invalid email format" });
       }
+
+      if (email !== user.email) {
+        const emailExists = await User.findOne({
+          email,
+          _id: { $ne: user._id },
+        });
+
+        if (emailExists) {
+          return res.status(400).json({ message: "Email already in use" });
+        }
+      }
+
       user.email = email;
     }
 

@@ -2,15 +2,28 @@ import express from "express";
 import Signal from "../models/Signal.js";
 import { protect } from "../middleware/authMiddleware.js";
 import {
+  DEFAULT_FUTURES_LEVERAGE,
   generateSignal,
   saveSignal,
   getActiveSignals,
   getSignalHistory,
+  getSignalPerformanceSummary,
+  resolveSignal,
   updateSignalStatus,
 } from "../services/signalService.js";
-import { getKlines } from "../services/marketService.js";
+import { runSignalBacktest } from "../services/backtestService.js";
+import { getKlines, resolveToMarketSymbol } from "../services/marketService.js";
 
 const router = express.Router();
+
+const parseLeverage = (value, fallback = DEFAULT_FUTURES_LEVERAGE) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, 1), 125);
+};
 
 /**
  * @route   GET /api/signals
@@ -19,7 +32,7 @@ const router = express.Router();
  */
 router.get("/", async (req, res) => {
   try {
-    const { symbol, status, limit = 50 } = req.query;
+    const { symbol, status, outcome, limit = 50 } = req.query;
 
     // Build query based on filters
     const query = {};
@@ -29,6 +42,9 @@ router.get("/", async (req, res) => {
     } else if (!status) {
       // Default to active signals when no status filter specified
       query.status = "ACTIVE";
+    }
+    if (outcome && outcome !== "ALL") {
+      query.outcome = outcome.toUpperCase();
     }
 
     const signals = await Signal.find(query)
@@ -58,7 +74,7 @@ router.get("/", async (req, res) => {
 router.get("/history", protect, async (req, res) => {
   try {
     const { symbol, limit = 210 } = req.query;
-    const signals = await getSignalHistory(symbol, parseInt(limit));
+    const signals = await getSignalHistory(req.user.id, symbol, parseInt(limit));
 
     res.json({
       success: true,
@@ -84,11 +100,19 @@ router.get("/history", protect, async (req, res) => {
 router.get("/analyze/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { timeframe = "1h" } = req.query;
+    const { timeframe = "1h", leverage } = req.query;
+    const marketSymbol = await resolveToMarketSymbol(symbol);
+
+    if (!marketSymbol) {
+      return res.status(400).json({
+        success: false,
+        message: `Unsupported or unknown futures symbol: ${symbol}`,
+      });
+    }
 
     // Fetch candlestick data
     const klineData = await getKlines(
-      symbol.toUpperCase(),
+      marketSymbol,
       timeframe,
       100,
     );
@@ -101,8 +125,9 @@ router.get("/analyze/:symbol", async (req, res) => {
     }
 
     // Generate signal (without saving)
-    const signalData = generateSignal(symbol.toUpperCase(), klineData, {
+    const signalData = generateSignal(marketSymbol, klineData, {
       timeframe,
+      leverage: parseLeverage(leverage),
     });
 
     if (!signalData) {
@@ -163,7 +188,7 @@ router.get("/:id", async (req, res) => {
  */
 router.post("/generate", protect, async (req, res) => {
   try {
-    const { symbol, timeframe = "1h" } = req.body;
+    const { symbol, timeframe = "1h", leverage } = req.body;
 
     if (!symbol) {
       return res.status(400).json({
@@ -172,8 +197,16 @@ router.post("/generate", protect, async (req, res) => {
       });
     }
 
+    const marketSymbol = await resolveToMarketSymbol(symbol);
+    if (!marketSymbol) {
+      return res.status(400).json({
+        success: false,
+        message: `Unsupported or unknown futures symbol: ${symbol}`,
+      });
+    }
+
     // Fetch candlestick data
-    const klineData = await getKlines(symbol, timeframe, 100);
+    const klineData = await getKlines(marketSymbol, timeframe, 100);
 
     if (!klineData || klineData.length < 26) {
       return res.status(400).json({
@@ -183,8 +216,9 @@ router.post("/generate", protect, async (req, res) => {
     }
 
     // Generate signal
-    const signalData = generateSignal(symbol.toUpperCase(), klineData, {
+    const signalData = generateSignal(marketSymbol, klineData, {
       timeframe,
+      leverage: parseLeverage(leverage),
     });
 
     if (!signalData) {
@@ -234,12 +268,12 @@ router.put("/:id/status", protect, async (req, res) => {
       });
     }
 
-    const signal = await updateSignalStatus(req.params.id, status);
+    const signal = await updateSignalStatus(req.params.id, status, req.user.id);
 
     if (!signal) {
       return res.status(404).json({
         success: false,
-        message: "Signal not found",
+        message: "Signal not found or not authorized",
       });
     }
 
@@ -249,6 +283,114 @@ router.put("/:id/status", protect, async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating signal status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/signals/:id/resolve
+ * @desc    Resolve a signal with the later observed price
+ * @access  Private
+ */
+router.put("/:id/resolve", protect, async (req, res) => {
+  try {
+    const {
+      resolutionPrice,
+      resolvedAt,
+      resolutionSource,
+      resolutionNotes,
+      status = "COMPLETED",
+    } = req.body;
+
+    if (!["COMPLETED", "CANCELLED"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Use COMPLETED or CANCELLED",
+      });
+    }
+
+    if (status === "COMPLETED" && resolutionPrice === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "Resolution price is required when completing a signal",
+      });
+    }
+
+    const signal = await resolveSignal(
+      req.params.id,
+      {
+        resolutionPrice,
+        resolvedAt,
+        resolutionSource,
+        resolutionNotes,
+        status,
+      },
+      req.user.id,
+    );
+
+    if (!signal) {
+      return res.status(404).json({
+        success: false,
+        message: "Signal not found, not authorized, or cannot be resolved",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: signal,
+    });
+  } catch (error) {
+    console.error("Error resolving signal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   POST /api/signals/backtest
+ * @desc    Run a historical backtest for signal generation logic
+ * @access  Private
+ */
+router.post("/backtest", protect, async (req, res) => {
+  try {
+    const result = await runSignalBacktest(req.body || {});
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error running signal backtest:", error);
+    res.status(400).json({
+      success: false,
+      message: error.message || "Failed to run backtest",
+    });
+  }
+});
+
+/**
+ * @route   GET /api/signals/stats/summary
+ * @desc    Get resolved signal performance summary
+ * @access  Public
+ */
+router.get("/stats/summary", async (req, res) => {
+  try {
+    const { symbol, timeframe } = req.query;
+    const summary = await getSignalPerformanceSummary({ symbol, timeframe });
+
+    res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    console.error("Error fetching signal performance summary:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

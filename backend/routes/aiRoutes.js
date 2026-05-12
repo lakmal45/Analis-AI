@@ -26,11 +26,12 @@ import {
   generateChatPrompt,
 } from "../services/aiService.js";
 import { getLatestNews } from "../services/newsService.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 // @route   POST /api/ai/analyze
 // @desc    Get AI analysis for a symbol
 // @access  Public
-router.post("/analyze", async (req, res) => {
+router.post("/analyze", protect, async (req, res) => {
   try {
     const { symbol = "BTCUSDT", interval = "1h", limit = 210 } = req.body;
 
@@ -51,7 +52,9 @@ router.post("/analyze", async (req, res) => {
     const newsData = await getLatestNews(symbol);
 
     // Get AI analysis with news data
-    const analysis = await analyzeMarket(marketData, indicators, newsData);
+    const analysis = await analyzeMarket(marketData, indicators, newsData, {
+      interval,
+    });
 
     res.json({
       symbol: symbol.toUpperCase(),
@@ -82,7 +85,7 @@ router.post("/analyze", async (req, res) => {
 // @route   POST /api/ai/chat
 // @desc    Get AI chat response
 // @access  Public
-router.post("/chat", async (req, res) => {
+router.post("/chat", protect, async (req, res) => {
   try {
     const { message, history = [], marketContext = null } = req.body;
 
@@ -120,8 +123,12 @@ router.post("/chat", async (req, res) => {
 // @route   GET /api/ai/models
 // @desc    Get available AI models (OpenRouter)
 // @access  Public
-router.get("/models", async (req, res) => {
+router.get("/models", protect, async (req, res) => {
   try {
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res.status(503).json({ message: "AI provider is not configured" });
+    }
+
     const response = await axios.get("https://openrouter.ai/api/v1/models", {
       headers: {
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,

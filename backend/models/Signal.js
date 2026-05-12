@@ -17,6 +17,22 @@ const SignalSchema = new mongoose.Schema({
     min: 0,
     max: 100,
   },
+  expectedDirection: {
+    type: String,
+    enum: ["UP", "DOWN", "NEUTRAL"],
+    required: true,
+  },
+  marketType: {
+    type: String,
+    enum: ["FUTURES"],
+    default: "FUTURES",
+  },
+  leverage: {
+    type: Number,
+    min: 1,
+    max: 125,
+    default: 10,
+  },
   indicators: {
     rsi: { type: Number },
     macd: {
@@ -32,6 +48,37 @@ const SignalSchema = new mongoose.Schema({
     current: { type: Number, required: true },
     target: { type: Number },
     stopLoss: { type: Number },
+    resolution: { type: Number, default: null },
+  },
+  outcome: {
+    type: String,
+    enum: ["PENDING", "WIN", "LOSS", "NEUTRAL", "CANCELLED"],
+    default: "PENDING",
+  },
+  actualDirection: {
+    type: String,
+    enum: ["UP", "DOWN", "NEUTRAL"],
+    default: null,
+  },
+  resolvedAt: {
+    type: Date,
+    default: null,
+  },
+  resolutionSource: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  resolutionNotes: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  performance: {
+    priceChange: { type: Number, default: null },
+    priceChangePct: { type: Number, default: null },
+    marketPriceChangePct: { type: Number, default: null },
+    leveragedReturnPct: { type: Number, default: null },
   },
   reasoning: {
     type: String,
@@ -64,6 +111,7 @@ const SignalSchema = new mongoose.Schema({
 // Index for faster queries
 SignalSchema.index({ symbol: 1, createdAt: -1 });
 SignalSchema.index({ status: 1, createdAt: -1 });
+SignalSchema.index({ outcome: 1, resolvedAt: -1 });
 SignalSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // TTL index
 
 export default mongoose.model("Signal", SignalSchema);

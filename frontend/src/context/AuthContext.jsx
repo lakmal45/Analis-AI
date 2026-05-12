@@ -1,35 +1,13 @@
-import { createContext, useState, useEffect, useContext } from "react";
+import { useEffect, useState } from "react";
 import api from "../api/api";
-
-const AuthContext = createContext();
-
-export const useAuth = () => useContext(AuthContext);
+import { AuthContext } from "./authContext";
 
 export const AuthProvider = ({ children }) => {
+  const storedToken =
+    typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(storedToken));
   const [error, setError] = useState(null);
-
-  useEffect(() => {
-    // Check for stored token and validate
-    const token = localStorage.getItem("token");
-    if (token) {
-      fetchUserProfile(token);
-    } else {
-      setLoading(false);
-    }
-  }, []);
-
-  const fetchUserProfile = async (token) => {
-    try {
-      const { data } = await api.get("/auth/profile");
-      setUser(data);
-    } catch (error) {
-      localStorage.removeItem("token");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const register = async (username, email, password) => {
     try {
@@ -72,6 +50,33 @@ export const AuthProvider = ({ children }) => {
   };
 
   const getToken = () => localStorage.getItem("token");
+
+  useEffect(() => {
+    if (!storedToken) return undefined;
+
+    let isMounted = true;
+
+    const fetchUserProfile = async () => {
+      try {
+        const { data } = await api.get("/auth/profile");
+        if (isMounted) {
+          setUser(data);
+        }
+      } catch {
+        localStorage.removeItem("token");
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchUserProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [storedToken]);
 
   return (
     <AuthContext.Provider

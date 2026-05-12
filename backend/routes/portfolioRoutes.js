@@ -13,12 +13,18 @@ const router = express.Router();
 router.get("/", protect, async (req, res) => {
   try {
     const portfolio = await Portfolio.getOrCreatePortfolio(req.user.id);
+    const symbols = portfolio.holdings.map((holding) => holding.symbol);
+    const tickers = symbols.length
+      ? await marketService.getMultiple24hTickers(symbols)
+      : [];
+    const tickerMap = new Map(tickers.map((ticker) => [ticker.symbol, ticker]));
 
     // Fetch live prices for all holdings
     const holdingsWithPrices = await Promise.all(
       portfolio.holdings.map(async (holding) => {
         try {
-          const ticker = await marketService.get24hTicker(holding.symbol);
+          const ticker = tickerMap.get(holding.symbol);
+          if (!ticker) throw new Error("Ticker unavailable");
           const currentPrice = parseFloat(ticker.lastPrice);
           const value = currentPrice * holding.quantity;
           const cost = holding.buyPrice * holding.quantity;
@@ -103,11 +109,7 @@ router.post("/holdings", protect, async (req, res) => {
     }
 
     const portfolio = await Portfolio.getOrCreatePortfolio(req.user.id);
-    await portfolio.addHolding(
-      symbol.toUpperCase(),
-      parseFloat(quantity),
-      parseFloat(buyPrice),
-    );
+    await portfolio.addHolding(symbol.toUpperCase(), parseFloat(quantity), parseFloat(buyPrice), buyDate ? new Date(buyDate) : new Date(), notes || "");
 
     // Fetch updated portfolio
     const updatedPortfolio = await Portfolio.getOrCreatePortfolio(req.user.id);

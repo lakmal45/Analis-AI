@@ -8,26 +8,36 @@ const WatchlistPreview = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchWatchlist();
-  }, []);
+    let isMounted = true;
 
-  const fetchWatchlist = async () => {
-    try {
-      const response = await api.get("/watchlist");
-      setWatchlist(response.data.assets || []);
-    } catch (error) {
-      console.error("Error fetching watchlist:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const fetchWatchlist = async () => {
+      try {
+        const response = await api.get("/watchlist");
+        if (isMounted) {
+          setWatchlist(response.data.assets || []);
+        }
+      } catch (error) {
+        console.error("Error fetching watchlist:", error);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchWatchlist();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <GlassCard className="p-6">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold text-white">👁️ Watchlist</h3>
+        <h3 className="text-lg font-semibold text-white">Watchlist</h3>
         <Link
-          to="/watchlist"
+          to="/app/watchlist"
           className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
         >
           View All →
@@ -73,7 +83,7 @@ const WatchlistPreview = () => {
             <div className="text-center py-4">
               <p className="text-gray-400 text-sm mb-2">No assets yet</p>
               <Link
-                to="/watchlist"
+                to="/app/watchlist"
                 className="text-blue-400 hover:text-blue-300 text-sm"
               >
                 Add your first asset →

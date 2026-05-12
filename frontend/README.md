@@ -1,18 +1,40 @@
-# React + Vite
+# AnalisAI Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Stack
 
-Currently, two official plugins are available:
+- React 19
+- Vite
+- React Router
+- Tailwind CSS
+- Socket.IO client
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Main Features
 
-## React Compiler
+- Authenticated dashboard under `/app/*`
+- Live market analysis screens
+- Watchlist with realtime ticker updates
+- Signal browsing and manual signal generation
+- Portfolio tracking
+- AI chat and AI market analysis
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+## Environment
 
-Note: This will impact Vite dev & build performances.
+Create a `.env` file in the frontend directory:
 
-## Expanding the ESLint configuration
+```env
+VITE_API_URL=http://localhost:5000
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Scripts
+
+```bash
+npm run dev
+npm run build
+npm run lint
+npm run preview
+```
+
+## Notes
+
+- The frontend expects the backend API to expose routes under `/api`.
+- Protected pages live under `/app/dashboard`, `/app/analysis`, `/app/watchlist`, `/app/signals`, `/app/chat`, `/app/settings`, and `/app/profile`.

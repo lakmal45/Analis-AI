@@ -3,8 +3,41 @@
  * Calculates RSI, MACD, EMA, SMA, Bollinger Bands, Stochastic from candlestick data
  */
 
+const calculateRSIValue = (avgGain, avgLoss) => {
+  if (avgGain === 0 && avgLoss === 0) return 50;
+  if (avgLoss === 0) return 100;
+  if (avgGain === 0) return 0;
+
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+};
+
+const smoothSeries = (values, period) => {
+  if (!values || values.length < period || period <= 0) {
+    return [];
+  }
+
+  const smoothed = [];
+
+  for (let i = period - 1; i < values.length; i++) {
+    const slice = values.slice(i - period + 1, i + 1);
+    const avg = slice.reduce((acc, val) => acc + val.value, 0) / period;
+
+    smoothed.push({
+      time: values[i].time,
+      value: avg,
+    });
+  }
+
+  return smoothed;
+};
+
 // Calculate Simple Moving Average (SMA)
 const calculateSMA = (data, period) => {
+  if (!data || data.length < period || period <= 0) {
+    return [];
+  }
+
   const sma = [];
   for (let i = period - 1; i < data.length; i++) {
     const sum = data
@@ -20,6 +53,10 @@ const calculateSMA = (data, period) => {
 
 // Calculate Exponential Moving Average (EMA)
 const calculateEMA = (data, period) => {
+  if (!data || data.length < period || period <= 0) {
+    return [];
+  }
+
   const multiplier = 2 / (period + 1);
   const ema = [];
 
@@ -40,6 +77,10 @@ const calculateEMA = (data, period) => {
 
 // Calculate Relative Strength Index (RSI)
 const calculateRSI = (data, period = 14) => {
+  if (!data || data.length <= period || period <= 0) {
+    return [];
+  }
+
   const rsi = [];
   const changes = [];
 
@@ -64,25 +105,23 @@ const calculateRSI = (data, period = 14) => {
   avgLoss /= period;
 
   // Calculate RSI for first point
-  let rs = avgGain / avgLoss;
   rsi.push({
     time: data[period].openTime,
-    value: 100 - 100 / (1 + rs),
+    value: calculateRSIValue(avgGain, avgLoss),
   });
 
   // Calculate RSI for remaining points
   for (let i = period + 1; i < data.length; i++) {
     const change = changes[i - 1];
-    let gain = change > 0 ? change : 0;
-    let loss = change < 0 ? Math.abs(change) : 0;
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
 
     avgGain = (avgGain * (period - 1) + gain) / period;
     avgLoss = (avgLoss * (period - 1) + loss) / period;
 
-    rs = avgGain / avgLoss;
     rsi.push({
       time: data[i].openTime,
-      value: 100 - 100 / (1 + rs),
+      value: calculateRSIValue(avgGain, avgLoss),
     });
   }
 
@@ -100,9 +139,16 @@ const calculateMACD = (
   const fastEMA = calculateEMA(data, fastPeriod);
   const slowEMA = calculateEMA(data, slowPeriod);
 
+  if (fastEMA.length === 0 || slowEMA.length === 0) {
+    return {
+      macdLine: [],
+      signalLine: [],
+      histogram: [],
+    };
+  }
+
   // Calculate MACD line (fast EMA - slow EMA)
   const macdLine = [];
-  const startIndex = slowPeriod - 1; // Start from where slow EMA begins
 
   for (let i = 0; i < fastEMA.length; i++) {
     // Find corresponding slow EMA value
@@ -145,6 +191,14 @@ const calculateMACD = (
 
 // Calculate Bollinger Bands
 const calculateBollingerBands = (data, period = 20, multiplier = 2) => {
+  if (!data || data.length < period || period <= 0) {
+    return {
+      upper: [],
+      middle: [],
+      lower: [],
+    };
+  }
+
   const sma = calculateSMA(data, period);
   const upperBand = [];
   const lowerBand = [];
@@ -179,37 +233,33 @@ const calculateBollingerBands = (data, period = 20, multiplier = 2) => {
 
 // Calculate Stochastic Oscillator
 const calculateStochastic = (data, period = 14, smoothK = 3, smoothD = 3) => {
-  const stoch = [];
+  if (!data || data.length < period || period <= 0 || smoothK <= 0 || smoothD <= 0) {
+    return {
+      percentK: [],
+      percentD: [],
+    };
+  }
 
-  // Calculate %K values
-  const percentKValues = [];
+  // Calculate raw %K values
+  const rawPercentKValues = [];
   for (let i = period - 1; i < data.length; i++) {
     const slice = data.slice(i - period + 1, i + 1);
     const highestHigh = Math.max(...slice.map((d) => d.high));
     const lowestLow = Math.min(...slice.map((d) => d.low));
     const currentClose = data[i].close;
+    const range = highestHigh - lowestLow;
 
-    const percentK =
-      ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
-    percentKValues.push({
+    rawPercentKValues.push({
       time: data[i].openTime,
-      value: percentK,
+      value: range === 0 ? 50 : ((currentClose - lowestLow) / range) * 100,
     });
   }
 
-  // Smooth %K to get %D (usually a 3-period SMA of %K)
-  const percentDValues = [];
-  for (let i = smoothK - 1; i < percentKValues.length; i++) {
-    const slice = percentKValues.slice(i - smoothK + 1, i + 1);
-    const avg = slice.reduce((acc, val) => acc + val.value, 0) / smoothK;
-    percentDValues.push({
-      time: percentKValues[i].time,
-      value: avg,
-    });
-  }
-
-  // Align %K and %D values
-  const alignedK = percentKValues.slice(smoothK - 1);
+  const smoothedPercentK =
+    smoothK === 1 ? rawPercentKValues : smoothSeries(rawPercentKValues, smoothK);
+  const percentDValues =
+    smoothD === 1 ? smoothedPercentK : smoothSeries(smoothedPercentK, smoothD);
+  const alignedK = smoothedPercentK.slice(smoothedPercentK.length - percentDValues.length);
 
   return {
     percentK: alignedK,

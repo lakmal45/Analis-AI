@@ -1,4 +1,3 @@
-import React from "react";
 import GlassCard from "./GlassCard";
 
 const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
@@ -6,9 +5,17 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
     symbol,
     type,
     confidence,
+    leverage,
+    marketType,
+    outcome,
+    expectedDirection,
+    actualDirection,
+    performance,
     price,
     indicators,
     reasoning,
+    resolvedAt,
+    resolutionSource,
     timeframe,
     status,
     createdAt,
@@ -30,17 +37,35 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
 
   const signalColorClass = getSignalColor(type);
 
+  const getOutcomeColor = (value) => {
+    switch (value) {
+      case "WIN":
+        return "text-green-400 bg-green-400/10 border-green-400/30";
+      case "LOSS":
+        return "text-red-400 bg-red-400/10 border-red-400/30";
+      case "NEUTRAL":
+        return "text-yellow-400 bg-yellow-400/10 border-yellow-400/30";
+      case "CANCELLED":
+        return "text-gray-400 bg-gray-400/10 border-gray-400/30";
+      default:
+        return "text-blue-400 bg-blue-400/10 border-blue-400/30";
+    }
+  };
+
   // Format price
   const formatPrice = (price) => {
-    if (!price) return "N/A";
+    if (price === null || price === undefined) return "N/A";
     return price >= 1 ? `$${price.toFixed(2)}` : `$${price.toFixed(6)}`;
   };
 
-  // Format percentage
   const formatPercent = (value) => {
-    if (!value && value !== 0) return "N/A";
-    return `${value.toFixed(2)}%`;
+    if (value === null || value === undefined) return "N/A";
+    return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
   };
+
+  const leveragedReturnPct =
+    performance?.leveragedReturnPct ?? performance?.priceChangePct;
+  const marketMovePct = performance?.marketPriceChangePct;
 
   // Format date
   const formatDate = (date) => {
@@ -58,7 +83,9 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
       <div className="flex justify-between items-start mb-4">
         <div>
           <h3 className="text-xl font-bold text-white">{symbol}</h3>
-          <span className="text-sm text-gray-400">{timeframe} timeframe</span>
+          <span className="text-sm text-gray-400">
+            {marketType || "FUTURES"} | {timeframe} | {leverage || 1}x
+          </span>
         </div>
         <div className="text-right">
           <span
@@ -117,12 +144,82 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
           </div>
         )}
         <div className="bg-white/5 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-1">Leverage</p>
+          <p className="text-sm font-semibold text-cyan-400">
+            {leverage || 1}x
+          </p>
+        </div>
+        <div className="bg-white/5 rounded-lg p-3">
           <p className="text-xs text-gray-400 mb-1">Current</p>
           <p className="text-sm font-semibold text-white">
             {formatPrice(price?.current)}
           </p>
         </div>
+        {status === "COMPLETED" && (
+          <div className="bg-cyan-400/10 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">Resolved Price</p>
+            <p className="text-sm font-semibold text-cyan-400">
+              {formatPrice(price?.resolution)}
+            </p>
+          </div>
+        )}
       </div>
+
+      {(status === "COMPLETED" || outcome === "CANCELLED") && (
+        <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div>
+              <p className="text-sm font-semibold text-white">Resolved Outcome</p>
+              <p className="text-xs text-gray-400 mt-1">
+                {resolvedAt ? `Resolved ${formatDate(resolvedAt)}` : "Awaiting resolution timestamp"}
+              </p>
+            </div>
+            <span
+              className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${getOutcomeColor(outcome)}`}
+            >
+              {outcome || "PENDING"}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg bg-white/[0.03] p-3">
+              <p className="text-xs text-gray-400 mb-1">Expected Direction</p>
+              <p className="text-sm font-semibold text-white">
+                {expectedDirection || "N/A"}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] p-3">
+              <p className="text-xs text-gray-400 mb-1">Actual Direction</p>
+              <p className="text-sm font-semibold text-white">
+                {actualDirection || "N/A"}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] p-3">
+              <p className="text-xs text-gray-400 mb-1">Leveraged PnL</p>
+              <p
+                className={`text-sm font-semibold ${
+                  (leveragedReturnPct || 0) >= 0
+                    ? "text-emerald-400"
+                    : "text-red-400"
+                }`}
+              >
+                {formatPercent(leveragedReturnPct)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] p-3">
+              <p className="text-xs text-gray-400 mb-1">Resolution Source</p>
+              <p className="text-sm font-semibold text-white">
+                {resolutionSource || "Manual"}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] p-3">
+              <p className="text-xs text-gray-400 mb-1">Underlying Move</p>
+              <p className="text-sm font-semibold text-white">
+                {formatPercent(marketMovePct)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Indicators */}
       {indicators && (
@@ -189,17 +286,26 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
 
       {/* Status & Actions */}
       <div className="flex justify-between items-center pt-4 border-t border-white/10">
-        <span
-          className={`px-2 py-1 rounded text-xs font-medium ${
-            status === "ACTIVE"
-              ? "bg-blue-400/20 text-blue-400"
-              : status === "COMPLETED"
-                ? "bg-green-400/20 text-green-400"
-                : "bg-gray-400/20 text-gray-400"
-          }`}
-        >
-          {status}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`px-2 py-1 rounded text-xs font-medium ${
+              status === "ACTIVE"
+                ? "bg-blue-400/20 text-blue-400"
+                : status === "COMPLETED"
+                  ? "bg-green-400/20 text-green-400"
+                  : "bg-gray-400/20 text-gray-400"
+            }`}
+          >
+            {status}
+          </span>
+          {outcome && outcome !== "PENDING" && (
+            <span
+              className={`px-2 py-1 rounded text-xs font-medium border ${getOutcomeColor(outcome)}`}
+            >
+              {outcome}
+            </span>
+          )}
+        </div>
 
         {showActions && status === "ACTIVE" && onUpdateStatus && (
           <div className="flex gap-2">

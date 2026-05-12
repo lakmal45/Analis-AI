@@ -14,55 +14,59 @@ const MarketSentiment = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchMarketSentiment();
-  }, []);
+    let isMounted = true;
 
-  const fetchMarketSentiment = async () => {
-    try {
-      const response = await api.get("/market/overview");
-      const rawData = response.data;
+    const fetchMarketSentiment = async () => {
+      try {
+        const response = await api.get("/market/overview");
+        const rawData = response.data;
+        const data = Array.isArray(rawData) ? rawData : rawData.data || [];
 
-      // Handle both array and {data:[]} response shapes
-      const data = Array.isArray(rawData) ? rawData : rawData.data || [];
+        if (data.length > 0 && isMounted) {
+          const avgChange =
+            data.reduce((sum, item) => sum + item.change24h, 0) / data.length;
 
-      if (data.length > 0) {
-        // Calculate sentiment based on average change
-        const avgChange =
-          data.reduce((sum, item) => sum + item.change24h, 0) / data.length;
+          let overall = "Neutral";
+          let score = 50;
 
-        // Determine sentiment
-        let overall = "Neutral";
-        let score = 50;
+          if (avgChange > 3) {
+            overall = "Bullish";
+            score = Math.min(90, 50 + avgChange * 5);
+          } else if (avgChange > 0) {
+            overall = "Slightly Bullish";
+            score = 50 + avgChange * 5;
+          } else if (avgChange < -3) {
+            overall = "Bearish";
+            score = Math.max(10, 50 + avgChange * 5);
+          } else if (avgChange < 0) {
+            overall = "Slightly Bearish";
+            score = 50 + avgChange * 5;
+          }
 
-        if (avgChange > 3) {
-          overall = "Bullish 🚀";
-          score = Math.min(90, 50 + avgChange * 5);
-        } else if (avgChange > 0) {
-          overall = "Slightly Bullish 🙂";
-          score = 50 + avgChange * 5;
-        } else if (avgChange < -3) {
-          overall = "Bearish 📉";
-          score = Math.max(10, 50 + avgChange * 5);
-        } else if (avgChange < 0) {
-          overall = "Slightly Bearish 😟";
-          score = 50 + avgChange * 5;
+          setSentiment({
+            overall,
+            score: Math.round(score),
+            fearGreed: Math.round(score),
+            btcDominance: 0,
+            totalMarketCap: 0,
+            volume24h: data.reduce((sum, item) => sum + item.volume24h, 0),
+          });
         }
-
-        setSentiment({
-          overall,
-          score: Math.round(score),
-          fearGreed: Math.round(score),
-          btcDominance: 0,
-          totalMarketCap: 0,
-          volume24h: data.reduce((sum, item) => sum + item.volume24h, 0),
-        });
+      } catch (error) {
+        console.error("Error fetching market sentiment:", error);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
       }
-    } catch (error) {
-      console.error("Error fetching market sentiment:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    fetchMarketSentiment();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const getSentimentColor = (score) => {
     if (score >= 70) return "text-green-400";
@@ -79,7 +83,7 @@ const MarketSentiment = () => {
   return (
     <GlassCard className="p-6">
       <h3 className="text-lg font-semibold text-white mb-4">
-        📊 Market Sentiment
+        Market Sentiment
       </h3>
 
       {loading ? (
@@ -89,7 +93,6 @@ const MarketSentiment = () => {
         </div>
       ) : (
         <div className="space-y-4">
-          {/* Sentiment Score */}
           <div className="text-center">
             <p
               className={`text-4xl font-bold ${getSentimentColor(sentiment.score)}`}
@@ -99,7 +102,6 @@ const MarketSentiment = () => {
             <p className="text-white font-medium mt-1">{sentiment.overall}</p>
           </div>
 
-          {/* Sentiment Bar */}
           <div>
             <div className="flex justify-between text-xs text-gray-400 mb-1">
               <span>Extreme Fear</span>
@@ -114,7 +116,6 @@ const MarketSentiment = () => {
             </div>
           </div>
 
-          {/* Stats */}
           <div className="grid grid-cols-2 gap-3 pt-4 border-t border-white/10">
             <div>
               <p className="text-xs text-gray-400">24h Volume</p>

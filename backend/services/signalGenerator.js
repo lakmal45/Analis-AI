@@ -4,7 +4,7 @@
  */
 
 import Signal from "../models/Signal.js";
-import { saveSignal } from "./signalService.js";
+import { DEFAULT_FUTURES_LEVERAGE, saveSignal } from "./signalService.js";
 import marketService from "./marketService.js";
 import binanceWS from "./binanceWS.js";
 import { analyzeMarket } from "./aiService.js";
@@ -162,8 +162,11 @@ const generateSignalForSymbol = async (symbol) => {
 
       const signalData = {
         symbol,
+        marketType: "FUTURES",
+        leverage: DEFAULT_FUTURES_LEVERAGE,
         type,
         confidence: analysis.confidence,
+        expectedDirection: type === "BUY" ? "UP" : "DOWN",
         indicators: {
           rsi: indicators.rsi14,
           macd: {
@@ -179,10 +182,22 @@ const generateSignalForSymbol = async (symbol) => {
           current: currentPrice,
           target: type === "BUY" ? analysis.resistance : analysis.support,
           stopLoss: type === "BUY" ? analysis.support : analysis.resistance,
+          resolution: null,
         },
         reasoning: `AI Analysis: ${analysis.explanation}`,
         timeframe: "1h",
         status: "ACTIVE",
+        outcome: "PENDING",
+        actualDirection: null,
+        resolvedAt: null,
+        resolutionSource: null,
+        resolutionNotes: null,
+        performance: {
+          priceChange: null,
+          priceChangePct: null,
+          marketPriceChangePct: null,
+          leveragedReturnPct: null,
+        },
       };
 
       await saveSignal(signalData, null);
