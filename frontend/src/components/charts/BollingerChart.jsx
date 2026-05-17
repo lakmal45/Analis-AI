@@ -14,12 +14,15 @@ const BollingerChart = ({
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let isMounted = true;
+    let resizeHandler = null;
+    let chartInstance = null;
+
     const fetchDataAndCreateChart = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        // Fetch Bollinger Bands data from backend
         const response = await fetch(
           `${API_URL}/api/indicators/${symbol}/bollinger?interval=${interval}&limit=100`,
         );
@@ -31,111 +34,71 @@ const BollingerChart = ({
         const result = await response.json();
         const { upper, middle, lower } = result.data;
 
-        // Clear previous chart if exists
+        if (!isMounted) return;
+
         if (chartContainerRef.current) {
           chartContainerRef.current.innerHTML = "";
         }
 
-        // Create chart
         const chart = createChart(chartContainerRef.current, {
           width: chartContainerRef.current.clientWidth,
           height: height,
-          layout: {
-            backgroundColor: "#1f2937",
-            textColor: "#d1d5db",
-          },
-          grid: {
-            vertLines: {
-              color: "#374151",
-            },
-            horzLines: {
-              color: "#374151",
-            },
-          },
-          rightPriceScale: {
-            borderColor: "#374151",
-          },
-          timeScale: {
-            borderColor: "#374151",
-            timeVisible: true,
-            secondsVisible: false,
-          },
+          layout: { backgroundColor: "#1f2937", textColor: "#d1d5db" },
+          grid: { vertLines: { color: "#374151" }, horzLines: { color: "#374151" } },
+          rightPriceScale: { borderColor: "#374151" },
+          timeScale: { borderColor: "#374151", timeVisible: true, secondsVisible: false },
         });
 
-        // Add candlestick series (optional - for context)
-        // For now, just show the bands
+        chartInstance = chart;
 
-        // Add Upper Band
         const upperSeries = chart.addSeries(LineSeries, {
-          color: "#ef4444",
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          color: "#ef4444", lineWidth: 1, lineStyle: 2,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
           title: "Upper",
         });
         upperSeries.setData(upper);
 
-        // Add Middle Band (SMA)
         const middleSeries = chart.addSeries(LineSeries, {
-          color: "#3b82f6",
-          lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          color: "#3b82f6", lineWidth: 2,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
           title: "Middle (SMA)",
         });
         middleSeries.setData(middle);
 
-        // Add Lower Band
         const lowerSeries = chart.addSeries(LineSeries, {
-          color: "#22c55e",
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          color: "#22c55e", lineWidth: 1, lineStyle: 2,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
           title: "Lower",
         });
         lowerSeries.setData(lower);
 
-        // Fit content
         chart.timeScale().fitContent();
 
-        // Handle resize
-        const handleResize = () => {
+        resizeHandler = () => {
           if (chartContainerRef.current) {
-            chart.applyOptions({
-              width: chartContainerRef.current.clientWidth,
-            });
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
           }
         };
-
-        window.addEventListener("resize", handleResize);
+        window.addEventListener("resize", resizeHandler);
 
         chartRef.current = chart;
-
         setLoading(false);
-
-        return () => {
-          window.removeEventListener("resize", handleResize);
-          chart.remove();
-        };
       } catch (err) {
         console.error("Error creating Bollinger Bands chart:", err);
-        setError(err.message);
-        setLoading(false);
+        if (isMounted) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
     fetchDataAndCreateChart();
+
+    return () => {
+      isMounted = false;
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      if (chartInstance) chartInstance.remove();
+    };
   }, [symbol, interval, height]);
 
   return (

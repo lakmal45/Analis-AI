@@ -202,7 +202,7 @@ const Layout = () => {
 
       {/* Sidebar — Desktop */}
       <aside
-        className={`hidden lg:flex ${sidebarOpen ? "w-60" : "w-[72px]"} bg-[#0d1225]/80 backdrop-blur-xl border-r border-white/[0.06] transition-all duration-300 flex-col shrink-0 relative z-30`}
+        className={`hidden lg:flex ${sidebarOpen ? "w-60" : "w-[72px]"} bg-[#0d1225] border-r border-white/[0.06] transition-[width] duration-300 flex-col shrink-0 relative z-30`}
       >
         {renderSidebarContent()}
       </aside>
@@ -219,7 +219,7 @@ const Layout = () => {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Header */}
-        <header className="h-16 bg-[#0d1225]/60 backdrop-blur-xl border-b border-white/[0.06] flex items-center justify-between px-4 md:px-6 shrink-0 z-20">
+        <header className="h-16 bg-[#0d1225] border-b border-white/[0.06] flex items-center justify-between px-4 md:px-6 shrink-0 z-20">
           <div className="flex items-center gap-3">
             {/* Mobile menu button */}
             <button
@@ -357,7 +357,7 @@ const Layout = () => {
 
       {/* AI Assistant Panel */}
       <div
-        className={`fixed right-0 top-0 bottom-0 z-50 w-[360px] max-w-full bg-[#0d1225]/95 backdrop-blur-xl border-l border-white/[0.06] flex flex-col shadow-2xl shadow-black/40 transform transition-transform duration-300 ${
+        className={`fixed right-0 top-0 bottom-0 z-50 w-[360px] max-w-full bg-[#0d1225] border-l border-white/[0.06] flex flex-col shadow-2xl shadow-black/40 transform transition-transform duration-300 ${
           aiPanelOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >

@@ -57,7 +57,7 @@ const Home = () => {
         </svg>
       ),
       title: "AI-Powered Signals",
-      desc: "Machine learning algorithms analyzing patterns to generate high-confidence trade signals.",
+      desc: "Accuracy-focused futures signals that combine deterministic rules with measured ML validation.",
     },
     {
       icon: (
@@ -101,19 +101,19 @@ const Home = () => {
 
   return (
     <div className="min-h-screen bg-[#0a0e1a] text-white overflow-hidden">
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-blue-600/[0.07] blur-[120px] animate-pulse" />
+      <div className="fixed inset-0 pointer-events-none" style={{ contain: 'strict' }}>
+        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-blue-600/[0.07] blur-[80px]" style={{ willChange: 'opacity' }} />
         <div
-          className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-violet-600/[0.07] blur-[120px] animate-pulse"
-          style={{ animationDelay: "1s" }}
+          className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-violet-600/[0.07] blur-[80px]"
+          style={{ willChange: 'opacity' }}
         />
         <div
-          className="absolute top-[40%] left-[50%] w-[400px] h-[400px] rounded-full bg-cyan-500/[0.05] blur-[100px] animate-pulse"
-          style={{ animationDelay: "2s" }}
+          className="absolute top-[40%] left-[50%] w-[400px] h-[400px] rounded-full bg-cyan-500/[0.05] blur-[70px]"
+          style={{ willChange: 'opacity' }}
         />
       </div>
 
-      <nav className="relative z-50 flex items-center justify-between px-6 md:px-12 lg:px-20 py-5 border-b border-white/[0.06] backdrop-blur-md bg-[#0a0e1a]/60">
+      <nav className="relative z-50 flex items-center justify-between px-6 md:px-12 lg:px-20 py-5 border-b border-white/[0.06] bg-[#0a0e1a]/80">
         <Link to="/" className="flex items-center gap-3 group">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center font-bold text-sm tracking-tight shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
             A

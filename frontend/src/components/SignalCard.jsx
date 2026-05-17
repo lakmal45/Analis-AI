@@ -1,6 +1,7 @@
+import { memo } from "react";
 import GlassCard from "./GlassCard";
 
-const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
+const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
   const {
     symbol,
     type,
@@ -13,6 +14,7 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
     performance,
     price,
     indicators,
+    ml,
     reasoning,
     resolvedAt,
     resolutionSource,
@@ -66,6 +68,21 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
   const leveragedReturnPct =
     performance?.leveragedReturnPct ?? performance?.priceChangePct;
   const marketMovePct = performance?.marketPriceChangePct;
+  const mlProbabilityPct =
+    ml?.probability === null || ml?.probability === undefined
+      ? null
+      : ml.probability * 100;
+  const isHoldSignal = type === "HOLD";
+  const holdMlSkipped = isHoldSignal && ml?.predictionSource === "hold_signal_skipped";
+  const mlProbabilityLabel = holdMlSkipped
+    ? "Not used for HOLD"
+    : mlProbabilityPct === null
+      ? "N/A"
+      : `${mlProbabilityPct.toFixed(1)}%`;
+  const mlStatusLabel = holdMlSkipped
+    ? "Not used for HOLD"
+    : ml?.status || "PENDING";
+  const modelVersionLabel = holdMlSkipped ? "Not used for HOLD" : ml?.modelVersion || "N/A";
 
   // Format date
   const formatDate = (date) => {
@@ -78,7 +95,7 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
   };
 
   return (
-    <GlassCard className="p-6 hover:scale-[1.02] transition-transform">
+    <GlassCard className="p-6" hover={false}>
       {/* Header */}
       <div className="flex justify-between items-start mb-4">
         <div>
@@ -100,7 +117,7 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
       {/* Confidence Bar */}
       <div className="mb-4">
         <div className="flex justify-between items-center mb-1">
-          <span className="text-sm text-gray-400">Confidence</span>
+          <span className="text-sm text-gray-400">Final Confidence</span>
           <span className="text-sm font-semibold text-white">
             {confidence}%
           </span>
@@ -118,6 +135,35 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
           />
         </div>
       </div>
+
+      {ml && (
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="bg-white/5 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">Rule Confidence</p>
+            <p className="text-sm font-semibold text-white">
+              {ml.ruleConfidence ?? confidence}%
+            </p>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">ML Win Probability</p>
+            <p className="text-sm font-semibold text-cyan-400">
+              {mlProbabilityLabel}
+            </p>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">ML Status</p>
+            <p className="text-sm font-semibold text-white">
+              {mlStatusLabel}
+            </p>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">Model Version</p>
+            <p className="text-sm font-semibold text-white">
+              {modelVersionLabel}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Price Info */}
       <div className="grid grid-cols-2 gap-3 mb-4">
@@ -274,6 +320,34 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
                 </p>
               </div>
             )}
+            {indicators.supplyDemand?.bias && indicators.supplyDemand.bias !== "NONE" && (
+              <div className="bg-white/5 rounded p-2">
+                <span className="text-xs text-gray-400">S/D Bias</span>
+                <p
+                  className={`text-sm font-semibold ${
+                    indicators.supplyDemand.bias === "DEMAND"
+                      ? "text-cyan-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {indicators.supplyDemand.bias}
+                </p>
+              </div>
+            )}
+            {indicators.fvg?.bias && indicators.fvg.bias !== "NONE" && (
+              <div className="bg-white/5 rounded p-2">
+                <span className="text-xs text-gray-400">FVG Bias</span>
+                <p
+                  className={`text-sm font-semibold ${
+                    indicators.fvg.bias === "BULLISH"
+                      ? "text-emerald-400"
+                      : "text-orange-400"
+                  }`}
+                >
+                  {indicators.fvg.bias}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -326,6 +400,6 @@ const SignalCard = ({ signal, onUpdateStatus, showActions = true }) => {
       </div>
     </GlassCard>
   );
-};
+});
 
 export default SignalCard;

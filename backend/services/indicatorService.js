@@ -32,6 +32,304 @@ const smoothSeries = (values, period) => {
   return smoothed;
 };
 
+const toSafeNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const toPercent = (numerator, denominator) => {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    return null;
+  }
+
+  return (numerator / denominator) * 100;
+};
+
+const calculateATRLatest = (data, period = 14) => {
+  if (!data || data.length < period + 1) {
+    return null;
+  }
+
+  const trueRanges = [];
+  for (let i = 1; i < data.length; i += 1) {
+    const high = toSafeNumber(data[i].high);
+    const low = toSafeNumber(data[i].low);
+    const prevClose = toSafeNumber(data[i - 1].close);
+
+    if (![high, low, prevClose].every(Number.isFinite)) {
+      continue;
+    }
+
+    trueRanges.push(
+      Math.max(
+        high - low,
+        Math.abs(high - prevClose),
+        Math.abs(low - prevClose),
+      ),
+    );
+  }
+
+  if (trueRanges.length < period) {
+    return null;
+  }
+
+  let atr = trueRanges.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  for (let i = period; i < trueRanges.length; i += 1) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+  }
+
+  return atr;
+};
+
+const findLatestSwingLevel = (data, swingLength = 10, type = "high") => {
+  if (!data || data.length < swingLength * 2 + 1) {
+    return null;
+  }
+
+  for (let i = data.length - 1 - swingLength; i >= swingLength; i -= 1) {
+    const candidate = toSafeNumber(data[i][type]);
+    if (!Number.isFinite(candidate)) {
+      continue;
+    }
+
+    let isPivot = true;
+    for (let offset = i - swingLength; offset <= i + swingLength; offset += 1) {
+      if (offset === i) {
+        continue;
+      }
+
+      const comparison = toSafeNumber(data[offset][type]);
+      if (!Number.isFinite(comparison)) {
+        continue;
+      }
+
+      if (type === "high" && comparison >= candidate) {
+        isPivot = false;
+        break;
+      }
+
+      if (type === "low" && comparison <= candidate) {
+        isPivot = false;
+        break;
+      }
+    }
+
+    if (isPivot) {
+      return {
+        price: candidate,
+        openTime: data[i].openTime,
+        index: i,
+      };
+    }
+  }
+
+  return null;
+};
+
+const calculateSupplyDemandZones = (
+  data,
+  swingLength = 10,
+  atrPeriod = 50,
+  boxWidth = 5,
+) => {
+  if (!data || data.length < Math.max(26, swingLength * 2 + 1)) {
+    return null;
+  }
+
+  const latestClose = toSafeNumber(data[data.length - 1].close);
+  const atr = calculateATRLatest(data, atrPeriod);
+  const buffer = Number.isFinite(atr) ? atr * (boxWidth / 10) : 0;
+  const latestSupplyPivot = findLatestSwingLevel(data, swingLength, "high");
+  const latestDemandPivot = findLatestSwingLevel(data, swingLength, "low");
+
+  const supply = latestSupplyPivot
+    ? {
+        top: latestSupplyPivot.price,
+        bottom: latestSupplyPivot.price - buffer,
+        poi: latestSupplyPivot.price - buffer / 2,
+        openTime: latestSupplyPivot.openTime,
+      }
+    : null;
+
+  const demand = latestDemandPivot
+    ? {
+        top: latestDemandPivot.price + buffer,
+        bottom: latestDemandPivot.price,
+        poi: latestDemandPivot.price + buffer / 2,
+        openTime: latestDemandPivot.openTime,
+      }
+    : null;
+
+  const distanceToSupplyPct =
+    supply && Number.isFinite(latestClose)
+      ? toPercent(supply.poi - latestClose, latestClose)
+      : null;
+  const distanceToDemandPct =
+    demand && Number.isFinite(latestClose)
+      ? toPercent(latestClose - demand.poi, latestClose)
+      : null;
+
+  let bias = "NONE";
+  if (supply && demand && Number.isFinite(distanceToSupplyPct) && Number.isFinite(distanceToDemandPct)) {
+    bias = Math.abs(distanceToDemandPct) <= Math.abs(distanceToSupplyPct)
+      ? "DEMAND"
+      : "SUPPLY";
+  } else if (demand) {
+    bias = "DEMAND";
+  } else if (supply) {
+    bias = "SUPPLY";
+  }
+
+  return {
+    atr,
+    bias,
+    supply: supply
+      ? {
+          ...supply,
+          distancePct: distanceToSupplyPct,
+        }
+      : null,
+    demand: demand
+      ? {
+          ...demand,
+          distancePct: distanceToDemandPct,
+        }
+      : null,
+  };
+};
+
+const isBullishCandle = (candle) => toSafeNumber(candle.close) >= toSafeNumber(candle.open);
+
+const findActiveFairValueGap = (data, direction = "bull") => {
+  if (!data || data.length < 3) {
+    return null;
+  }
+
+  for (let i = data.length - 1; i >= 2; i -= 1) {
+    const current = data[i];
+    const middle = data[i - 1];
+    const first = data[i - 2];
+
+    const currentLow = toSafeNumber(current.low);
+    const currentHigh = toSafeNumber(current.high);
+    const middleClose = toSafeNumber(middle.close);
+    const firstHigh = toSafeNumber(first.high);
+    const firstLow = toSafeNumber(first.low);
+
+    if (
+      ![currentLow, currentHigh, middleClose, firstHigh, firstLow].every(Number.isFinite)
+    ) {
+      continue;
+    }
+
+    const sameType =
+      isBullishCandle(current) === isBullishCandle(middle) &&
+      isBullishCandle(middle) === isBullishCandle(first);
+
+    if (direction === "bull") {
+      const isGap = currentLow > firstHigh && middleClose > firstHigh && sameType;
+      if (!isGap) {
+        continue;
+      }
+
+      const min = firstHigh;
+      const max = currentLow;
+      let invalidated = false;
+      for (let j = i + 1; j < data.length; j += 1) {
+        const close = toSafeNumber(data[j].close);
+        if (Number.isFinite(close) && close < min) {
+          invalidated = true;
+          break;
+        }
+      }
+
+      if (!invalidated) {
+        return {
+          min,
+          max,
+          startTime: first.openTime,
+          endTime: current.openTime,
+          sizePct: toPercent(max - min, min),
+        };
+      }
+    } else {
+      const isGap = currentHigh < firstLow && middleClose < firstLow && sameType;
+      if (!isGap) {
+        continue;
+      }
+
+      const min = currentHigh;
+      const max = firstLow;
+      let invalidated = false;
+      for (let j = i + 1; j < data.length; j += 1) {
+        const close = toSafeNumber(data[j].close);
+        if (Number.isFinite(close) && close > max) {
+          invalidated = true;
+          break;
+        }
+      }
+
+      if (!invalidated) {
+        return {
+          min,
+          max,
+          startTime: first.openTime,
+          endTime: current.openTime,
+          sizePct: toPercent(max - min, max),
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const calculateFairValueGaps = (data) => {
+  if (!data || data.length < 3) {
+    return null;
+  }
+
+  const latestClose = toSafeNumber(data[data.length - 1].close);
+  const bullish = findActiveFairValueGap(data, "bull");
+  const bearish = findActiveFairValueGap(data, "bear");
+
+  const bullishDistancePct =
+    bullish && Number.isFinite(latestClose)
+      ? toPercent(latestClose - ((bullish.min + bullish.max) / 2), latestClose)
+      : null;
+  const bearishDistancePct =
+    bearish && Number.isFinite(latestClose)
+      ? toPercent(((bearish.min + bearish.max) / 2) - latestClose, latestClose)
+      : null;
+
+  let bias = "NONE";
+  if (bullish && bearish && Number.isFinite(bullishDistancePct) && Number.isFinite(bearishDistancePct)) {
+    bias = Math.abs(bullishDistancePct) <= Math.abs(bearishDistancePct)
+      ? "BULLISH"
+      : "BEARISH";
+  } else if (bullish) {
+    bias = "BULLISH";
+  } else if (bearish) {
+    bias = "BEARISH";
+  }
+
+  return {
+    bias,
+    bullish: bullish
+      ? {
+          ...bullish,
+          distancePct: bullishDistancePct,
+        }
+      : null,
+    bearish: bearish
+      ? {
+          ...bearish,
+          distancePct: bearishDistancePct,
+        }
+      : null,
+  };
+};
+
 // Calculate Simple Moving Average (SMA)
 const calculateSMA = (data, period) => {
   if (!data || data.length < period || period <= 0) {
@@ -283,6 +581,8 @@ const calculateAllIndicators = (klineData) => {
     macd: calculateMACD(klineData, 12, 26, 9),
     bollinger: calculateBollingerBands(klineData, 20, 2),
     stochastic: calculateStochastic(klineData, 14, 3, 3),
+    supplyDemand: calculateSupplyDemandZones(klineData),
+    fvg: calculateFairValueGaps(klineData),
     latest: {
       price: klineData[klineData.length - 1].close,
       sma20: null,
@@ -292,6 +592,8 @@ const calculateAllIndicators = (klineData) => {
       macd: null,
       bollinger: null,
       stochastic: null,
+      supplyDemand: null,
+      fvg: null,
     },
   };
 };
@@ -309,6 +611,8 @@ const getLatestIndicators = (klineData) => {
   const macd = calculateMACD(klineData, 12, 26, 9);
   const bollinger = calculateBollingerBands(klineData, 20, 2);
   const stochastic = calculateStochastic(klineData, 14, 3, 3);
+  const supplyDemand = calculateSupplyDemandZones(klineData);
+  const fvg = calculateFairValueGaps(klineData);
 
   return {
     price: klineData[klineData.length - 1].close,
@@ -354,6 +658,8 @@ const getLatestIndicators = (klineData) => {
           ? stochastic.percentD[stochastic.percentD.length - 1].value
           : null,
     },
+    supplyDemand,
+    fvg,
   };
 };
 
@@ -364,6 +670,8 @@ export {
   calculateMACD,
   calculateBollingerBands,
   calculateStochastic,
+  calculateSupplyDemandZones,
+  calculateFairValueGaps,
   calculateAllIndicators,
   getLatestIndicators,
 };

@@ -1,18 +1,20 @@
-const GlassCard = ({ children, className = "", hover = true, ...props }) => {
+import { memo } from "react";
+
+const GlassCard = memo(({ children, className = "", hover = true, ...props }) => {
   return (
     <div
       className={`
-        bg-white/10 backdrop-blur-lg
-        border border-white/20
-        rounded-xl shadow-xl
-        ${hover ? "hover:bg-white/15 hover:shadow-2xl transition-all duration-300" : ""}
+        bg-[#141929] border border-white/[0.08]
+        rounded-xl shadow-lg
+        ${hover ? "hover:bg-[#1a2035] hover:border-white/[0.12] transition-colors duration-200" : ""}
         ${className}
       `}
+      style={{ contain: "layout style paint" }}
       {...props}
     >
       {children}
     </div>
   );
-};
+});
 
 export default GlassCard;

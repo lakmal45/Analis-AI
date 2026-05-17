@@ -10,12 +10,15 @@ const MACDChart = ({ symbol = "BTCUSDT", interval = "1h", height = 300 }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let isMounted = true;
+    let resizeHandler = null;
+    let chartInstance = null;
+
     const fetchDataAndCreateChart = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        // Fetch MACD data from backend
         const response = await fetch(
           `${API_URL}/api/indicators/${symbol}/macd?interval=${interval}&limit=100`,
         );
@@ -27,113 +30,73 @@ const MACDChart = ({ symbol = "BTCUSDT", interval = "1h", height = 300 }) => {
         const result = await response.json();
         const { macdLine, signalLine, histogram } = result.data;
 
-        // Clear previous chart if exists
+        if (!isMounted) return;
+
         if (chartContainerRef.current) {
           chartContainerRef.current.innerHTML = "";
         }
 
-        // Create chart
         const chart = createChart(chartContainerRef.current, {
           width: chartContainerRef.current.clientWidth,
           height: height,
-          layout: {
-            backgroundColor: "#1f2937",
-            textColor: "#d1d5db",
-          },
-          grid: {
-            vertLines: {
-              color: "#374151",
-            },
-            horzLines: {
-              color: "#374151",
-            },
-          },
-          rightPriceScale: {
-            borderColor: "#374151",
-          },
-          timeScale: {
-            borderColor: "#374151",
-            timeVisible: true,
-            secondsVisible: false,
-          },
+          layout: { backgroundColor: "#1f2937", textColor: "#d1d5db" },
+          grid: { vertLines: { color: "#374151" }, horzLines: { color: "#374151" } },
+          rightPriceScale: { borderColor: "#374151" },
+          timeScale: { borderColor: "#374151", timeVisible: true, secondsVisible: false },
         });
 
-        // Add MACD line
+        chartInstance = chart;
+
         const macdSeries = chart.addSeries(LineSeries, {
-          color: "#3b82f6",
-          lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 4,
-            minMove: 0.0001,
-          },
+          color: "#3b82f6", lineWidth: 2,
+          priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           title: "MACD",
         });
-
         macdSeries.setData(macdLine);
 
-        // Add Signal line
         const signalSeries = chart.addSeries(LineSeries, {
-          color: "#ef4444",
-          lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 4,
-            minMove: 0.0001,
-          },
+          color: "#ef4444", lineWidth: 2,
+          priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           title: "Signal",
         });
-
         signalSeries.setData(signalLine);
 
-        // Add Histogram
         const histogramSeries = chart.addSeries(HistogramSeries, {
-          priceFormat: {
-            type: "price",
-            precision: 4,
-            minMove: 0.0001,
-          },
+          priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           title: "Histogram",
         });
-
-        const histogramData = histogram.map((item) => ({
-          time: item.time,
-          value: item.value,
+        histogramSeries.setData(histogram.map((item) => ({
+          time: item.time, value: item.value,
           color: item.value >= 0 ? "#22c55e" : "#ef4444",
-        }));
+        })));
 
-        histogramSeries.setData(histogramData);
-
-        // Fit content
         chart.timeScale().fitContent();
 
-        // Handle resize
-        const handleResize = () => {
+        resizeHandler = () => {
           if (chartContainerRef.current) {
-            chart.applyOptions({
-              width: chartContainerRef.current.clientWidth,
-            });
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
           }
         };
-
-        window.addEventListener("resize", handleResize);
+        window.addEventListener("resize", resizeHandler);
 
         chartRef.current = chart;
-
         setLoading(false);
-
-        return () => {
-          window.removeEventListener("resize", handleResize);
-          chart.remove();
-        };
       } catch (err) {
         console.error("Error creating MACD chart:", err);
-        setError(err.message);
-        setLoading(false);
+        if (isMounted) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
     fetchDataAndCreateChart();
+
+    return () => {
+      isMounted = false;
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      if (chartInstance) chartInstance.remove();
+    };
   }, [symbol, interval, height]);
 
   return (

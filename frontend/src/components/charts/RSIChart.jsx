@@ -10,6 +10,10 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let isMounted = true;
+    let resizeHandler = null;
+    let chartInstance = null;
+
     const fetchDataAndCreateChart = async () => {
       try {
         setLoading(true);
@@ -27,6 +31,8 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
         const result = await response.json();
         const rsiData = result.data;
 
+        if (!isMounted) return;
+
         // Clear previous chart if exists
         if (chartContainerRef.current) {
           chartContainerRef.current.innerHTML = "";
@@ -41,16 +47,10 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
             textColor: "#d1d5db",
           },
           grid: {
-            vertLines: {
-              color: "#374151",
-            },
-            horzLines: {
-              color: "#374151",
-            },
+            vertLines: { color: "#374151" },
+            horzLines: { color: "#374151" },
           },
-          rightPriceScale: {
-            borderColor: "#374151",
-          },
+          rightPriceScale: { borderColor: "#374151" },
           timeScale: {
             borderColor: "#374151",
             timeVisible: true,
@@ -58,80 +58,60 @@ const RSChart = ({ symbol = "BTCUSDT", interval = "1h", height = 200 }) => {
           },
         });
 
+        chartInstance = chart;
+
         // Add RSI line series
         const rsiSeries = chart.addSeries(LineSeries, {
           color: "#eab308",
           lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
         });
-
         rsiSeries.setData(rsiData);
 
         // Add overbought/oversold lines
         const overboughtLine = chart.addSeries(LineSeries, {
           color: "#ef4444",
           lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 0,
-          },
+          lineStyle: 2,
+          priceFormat: { type: "price", precision: 0 },
         });
-
         const oversoldLine = chart.addSeries(LineSeries, {
           color: "#22c55e",
           lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 0,
-          },
+          lineStyle: 2,
+          priceFormat: { type: "price", precision: 0 },
         });
 
-        // Add horizontal lines at 70 and 30
-        const overboughtData = rsiData.map((d) => ({
-          time: d.time,
-          value: 70,
-        }));
-        const oversoldData = rsiData.map((d) => ({ time: d.time, value: 30 }));
+        overboughtLine.setData(rsiData.map((d) => ({ time: d.time, value: 70 })));
+        oversoldLine.setData(rsiData.map((d) => ({ time: d.time, value: 30 })));
 
-        overboughtLine.setData(overboughtData);
-        oversoldLine.setData(oversoldData);
-
-        // Fit content
         chart.timeScale().fitContent();
 
-        // Handle resize
-        const handleResize = () => {
+        resizeHandler = () => {
           if (chartContainerRef.current) {
-            chart.applyOptions({
-              width: chartContainerRef.current.clientWidth,
-            });
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
           }
         };
-
-        window.addEventListener("resize", handleResize);
+        window.addEventListener("resize", resizeHandler);
 
         chartRef.current = chart;
-
         setLoading(false);
-
-        return () => {
-          window.removeEventListener("resize", handleResize);
-          chart.remove();
-        };
       } catch (err) {
         console.error("Error creating RSI chart:", err);
-        setError(err.message);
-        setLoading(false);
+        if (isMounted) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
     fetchDataAndCreateChart();
+
+    return () => {
+      isMounted = false;
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      if (chartInstance) chartInstance.remove();
+    };
   }, [symbol, interval, height]);
 
   return (

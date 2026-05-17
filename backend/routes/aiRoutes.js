@@ -25,6 +25,12 @@ import {
   generateMarketAnalysisPrompt,
   generateChatPrompt,
 } from "../services/aiService.js";
+import { getMlServiceHealth } from "../services/mlInferenceService.js";
+import {
+  getMlLifecycleStatus,
+  promoteMlModelVersion,
+  runMlRetraining,
+} from "../services/mlLifecycleService.js";
 import { getLatestNews } from "../services/newsService.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -146,6 +152,95 @@ router.get("/models", protect, async (req, res) => {
   } catch (error) {
     console.error("Error fetching models:", error);
     res.status(500).json({ message: "Failed to fetch models" });
+  }
+});
+
+// @route   GET /api/ai/ml/health
+// @desc    Get ML service health and loaded model metadata
+// @access  Private
+router.get("/ml/health", protect, async (req, res) => {
+  try {
+    const health = await getMlServiceHealth();
+
+    res.json({
+      success: true,
+      data: health,
+    });
+  } catch (error) {
+    console.error("Error fetching ML health:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch ML health",
+    });
+  }
+});
+
+// @route   GET /api/ai/ml/lifecycle
+// @desc    Get model registry, latest training run, and backend retraining status
+// @access  Private
+router.get("/ml/lifecycle", protect, async (req, res) => {
+  try {
+    const lifecycle = await getMlLifecycleStatus();
+
+    res.json({
+      success: true,
+      data: lifecycle,
+    });
+  } catch (error) {
+    console.error("Error fetching ML lifecycle:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch ML lifecycle",
+    });
+  }
+});
+
+// @route   POST /api/ai/ml/retrain
+// @desc    Export fresh training data and request model retraining
+// @access  Private
+router.post("/ml/retrain", protect, async (req, res) => {
+  try {
+    const result = await runMlRetraining(req.body || {});
+
+    if (!result.success) {
+      return res.status(409).json({
+        success: false,
+        message: result.reason || "Retraining could not be started",
+        data: result,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error retraining ML model:", error);
+    res.status(500).json({
+      success: false,
+      message: error.response?.data?.detail || error.message || "Failed to retrain model",
+    });
+  }
+});
+
+// @route   POST /api/ai/ml/models/:modelVersion/activate
+// @desc    Promote a trained model version to active
+// @access  Private
+router.post("/ml/models/:modelVersion/activate", protect, async (req, res) => {
+  try {
+    const result = await promoteMlModelVersion(req.params.modelVersion);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error activating ML model version:", error);
+    res.status(500).json({
+      success: false,
+      message:
+        error.response?.data?.detail || error.message || "Failed to activate model",
+    });
   }
 });
 

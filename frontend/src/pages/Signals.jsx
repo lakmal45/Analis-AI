@@ -20,7 +20,10 @@ const Signals = () => {
   const [selectedSymbol, setSelectedSymbol] = useState("");
   const [watchlistAssets, setWatchlistAssets] = useState([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
+  const [mlLifecycle, setMlLifecycle] = useState(null);
+  const [mlLifecycleLoading, setMlLifecycleLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [signalTimeframe, setSignalTimeframe] = useState("1h");
   const [signalLeverage, setSignalLeverage] = useState(defaultLeverage);
   const [searchParams] = useSearchParams();
   const [backtestConfig, setBacktestConfig] = useState({
@@ -30,6 +33,8 @@ const Signals = () => {
     resolutionCandles: 1,
     sampleSize: 12,
     leverage: defaultLeverage,
+    intrabarPolicy: "conservative",
+    backtestMlModel: "off",
   });
 
   const getLeveragedReturnPct = (performance) =>
@@ -54,7 +59,10 @@ const Signals = () => {
           return currentSymbol;
         }
 
-        if (currentSymbol && assets.some((asset) => asset.symbol === currentSymbol)) {
+        if (
+          currentSymbol &&
+          assets.some((asset) => asset.symbol === currentSymbol)
+        ) {
           return currentSymbol;
         }
 
@@ -71,6 +79,34 @@ const Signals = () => {
   useEffect(() => {
     fetchWatchlist();
   }, [fetchWatchlist]);
+
+  const fetchMlLifecycle = useCallback(async () => {
+    try {
+      setMlLifecycleLoading(true);
+      const response = await api.get("/ai/ml/lifecycle");
+      const lifecycle = response.data?.data || null;
+      setMlLifecycle(lifecycle);
+
+      const activeModelVersion =
+        lifecycle?.registry?.activeModelVersion || "off";
+      setBacktestConfig((current) => ({
+        ...current,
+        backtestMlModel:
+          current.backtestMlModel === "off"
+            ? activeModelVersion
+            : current.backtestMlModel,
+      }));
+    } catch (err) {
+      console.error("Error fetching ML lifecycle:", err);
+      setMlLifecycle(null);
+    } finally {
+      setMlLifecycleLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMlLifecycle();
+  }, [fetchMlLifecycle]);
 
   const fetchSignalSummary = useCallback(async () => {
     try {
@@ -126,10 +162,12 @@ const Signals = () => {
       setGenerating(true);
       const response = await api.post("/signals/generate", {
         symbol: symbol.toUpperCase(),
+        timeframe: signalTimeframe,
         leverage: signalLeverage,
       });
+      const generatedSignal = response.data.data;
       alert(
-        `Futures signal generated: ${response.data.data.type} at ${response.data.data.leverage}x with ${response.data.data.confidence}% confidence`,
+        `Futures signal generated: ${generatedSignal.type} at ${generatedSignal.leverage}x with ${generatedSignal.confidence}% final confidence${generatedSignal.ml?.probability !== null && generatedSignal.ml?.probability !== undefined ? ` (${(generatedSignal.ml.probability * 100).toFixed(1)}% ML win probability)` : ""}`,
       );
       await fetchSignals();
       await fetchSignalSummary();
@@ -151,7 +189,8 @@ const Signals = () => {
   };
 
   const runBacktest = async () => {
-    const symbolToTest = selectedSymbol || watchlistAssets[0]?.symbol || "BTCUSDT";
+    const symbolToTest =
+      selectedSymbol || watchlistAssets[0]?.symbol || "BTCUSDT";
 
     try {
       setBacktestLoading(true);
@@ -229,8 +268,13 @@ const Signals = () => {
 
   const backtestTrades = backtestResult?.recentTrades || [];
   const currentSymbolLabel = (
-    selectedSymbol || watchlistAssets[0]?.symbol || "BTCUSDT"
+    selectedSymbol ||
+    watchlistAssets[0]?.symbol ||
+    "BTCUSDT"
   ).replace("USDT", "");
+  const availableMlModels = mlLifecycle?.registry?.models || [];
+  const activeMlModelVersion =
+    mlLifecycle?.registry?.activeModelVersion || null;
 
   return (
     <div className="space-y-6">
@@ -239,77 +283,9 @@ const Signals = () => {
           <h1 className="text-3xl font-bold text-white">Futures Trading</h1>
           <p className="text-gray-400 mt-1">
             {activeTab === "signals"
-              ? "Generate, monitor, and review AI futures trade signals across perpetual markets."
+              ? "Generate, monitor, and review accuracy-focused futures trade signals across perpetual markets."
               : "Replay historical futures candles and inspect how the current futures logic performs."}
           </p>
-        </div>
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
-          <select
-            value={selectedSymbol}
-            onChange={(e) => setSelectedSymbol(e.target.value)}
-            disabled={watchlistLoading || watchlistAssets.length === 0}
-            className="min-w-[220px] px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-          >
-            {watchlistAssets.length === 0 ? (
-              <option value="" className="bg-gray-800 text-white">
-                {watchlistLoading ? "Loading watchlist..." : "No watchlist coins found"}
-              </option>
-            ) : (
-              <>
-                <option value="" className="bg-gray-800 text-white">
-                  All watchlist coins
-                </option>
-                {watchlistAssets.map((asset) => (
-                  <option
-                    key={asset.symbol}
-                    value={asset.symbol}
-                    className="bg-gray-800 text-white"
-                  >
-                    {asset.symbol.replace("USDT", "")}/USDT
-                  </option>
-                ))}
-              </>
-            )}
-          </select>
-          <input
-            type="number"
-            min="1"
-            max="125"
-            value={signalLeverage}
-            onChange={(e) =>
-              setSignalLeverage(
-                Math.min(125, Math.max(1, Number(e.target.value) || defaultLeverage)),
-              )
-            }
-            className="w-28 px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            aria-label="Signal leverage"
-            title="Signal leverage"
-          />
-          <button
-            onClick={() =>
-              activeTab === "signals"
-                ? generateSignal(selectedSymbol || "BTCUSDT")
-                : runBacktest()
-            }
-            disabled={
-              activeTab === "signals"
-                ? generating || watchlistAssets.length === 0
-                : backtestLoading || watchlistLoading
-            }
-            className={`px-4 py-2 text-white rounded-lg font-medium transition-colors ${
-              activeTab === "signals"
-                ? "bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800"
-                : "bg-violet-600 hover:bg-violet-700 disabled:bg-violet-900/60"
-            }`}
-          >
-            {activeTab === "signals"
-              ? generating
-                ? "Generating..."
-                : "Generate Futures Signal"
-              : backtestLoading
-                ? "Running Futures Backtest..."
-                : "Run Futures Backtest"}
-          </button>
         </div>
       </div>
 
@@ -335,17 +311,105 @@ const Signals = () => {
       </GlassCard>
 
       {activeTab === "signals" && (
+        <GlassCard className="p-4">
+          <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+            <label className="block flex-1">
+              <span className="text-sm text-gray-400 mb-2 block">Coin</span>
+              <select
+                value={selectedSymbol}
+                onChange={(e) => setSelectedSymbol(e.target.value)}
+                disabled={watchlistLoading || watchlistAssets.length === 0}
+                className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+              >
+                {watchlistAssets.length === 0 ? (
+                  <option value="" className="bg-gray-800 text-white">
+                    {watchlistLoading
+                      ? "Loading watchlist..."
+                      : "No watchlist coins found"}
+                  </option>
+                ) : (
+                  <>
+                    <option value="" className="bg-gray-800 text-white">
+                      All watchlist coins
+                    </option>
+                    {watchlistAssets.map((asset) => (
+                      <option
+                        key={asset.symbol}
+                        value={asset.symbol}
+                        className="bg-gray-800 text-white"
+                      >
+                        {asset.symbol.replace("USDT", "")}/USDT
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+            </label>
+
+            <label className="block w-full lg:w-36">
+              <span className="text-sm text-gray-400 mb-2 block">Timeframe</span>
+              <select
+                value={signalTimeframe}
+                onChange={(e) => setSignalTimeframe(e.target.value)}
+                className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {["1m", "5m", "15m", "1h", "4h", "1d"].map((timeframe) => (
+                  <option key={timeframe} value={timeframe} className="bg-gray-800 text-white">
+                    {timeframe}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block w-full lg:w-32">
+              <span className="text-sm text-gray-400 mb-2 block">Leverage</span>
+              <input
+                type="number"
+                min="1"
+                max="125"
+                value={signalLeverage}
+                onChange={(e) =>
+                  setSignalLeverage(
+                    Math.min(
+                      125,
+                      Math.max(1, Number(e.target.value) || defaultLeverage),
+                    ),
+                  )
+                }
+                className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="Signal leverage"
+                title="Signal leverage"
+              />
+            </label>
+
+            <button
+              onClick={() => generateSignal(selectedSymbol || "BTCUSDT")}
+              disabled={generating || watchlistAssets.length === 0}
+              className="w-full lg:w-auto px-4 py-2 text-white rounded-lg font-medium transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800"
+            >
+              {generating ? "Generating..." : "Generate Futures Signal"}
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {activeTab === "signals" && (
         <>
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
             <GlassCard className="p-6 xl:col-span-2">
               <div className="flex justify-between items-center mb-5">
                 <div>
-                  <h2 className="text-xl font-semibold text-white">Performance Snapshot</h2>
+                  <h2 className="text-xl font-semibold text-white">
+                    Performance Snapshot
+                  </h2>
                   <p className="text-sm text-gray-400 mt-1">
-                    Live view of resolved futures signal performance, leverage, and tracked outcomes.
+                    Live view of resolved futures signal performance, leverage,
+                    and tracked outcomes.
                   </p>
                 </div>
-                {summaryLoading && <span className="text-sm text-gray-500">Refreshing...</span>}
+                {summaryLoading && (
+                  <span className="text-sm text-gray-500">Refreshing...</span>
+                )}
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {summaryCards.map((card) => (
@@ -354,14 +418,18 @@ const Signals = () => {
                     className="rounded-xl border border-white/10 bg-white/[0.04] p-4"
                   >
                     <p className="text-sm text-gray-400 mb-2">{card.label}</p>
-                    <p className={`text-2xl font-bold ${card.tone}`}>{card.value}</p>
+                    <p className={`text-2xl font-bold ${card.tone}`}>
+                      {card.value}
+                    </p>
                   </div>
                 ))}
               </div>
             </GlassCard>
 
             <GlassCard className="p-6">
-              <h2 className="text-xl font-semibold text-white mb-5">Outcome Mix</h2>
+              <h2 className="text-xl font-semibold text-white mb-5">
+                Outcome Mix
+              </h2>
               <div className="space-y-4">
                 {(summary?.byOutcome || []).map((item) => (
                   <div key={item.outcome}>
@@ -386,7 +454,9 @@ const Signals = () => {
                   </div>
                 ))}
                 {(!summary?.byOutcome || summary.byOutcome.length === 0) && (
-                  <p className="text-sm text-gray-500">No resolved outcome data yet.</p>
+                  <p className="text-sm text-gray-500">
+                    No resolved outcome data yet.
+                  </p>
                 )}
               </div>
             </GlassCard>
@@ -394,20 +464,28 @@ const Signals = () => {
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <GlassCard className="p-6">
-              <h2 className="text-xl font-semibold text-white mb-2">Win/Loss History</h2>
+              <h2 className="text-xl font-semibold text-white mb-2">
+                Win/Loss History
+              </h2>
               <p className="text-sm text-gray-400 mb-5">
-                Recent resolved futures trade signals, ordered from newest to oldest by leveraged return.
+                Recent resolved futures trade signals, ordered from newest to
+                oldest by leveraged return.
               </p>
               <div className="flex items-end gap-3 h-56">
                 {chartSignals.map((signal) => {
-                  const leveragedReturn = getLeveragedReturnPct(signal.performance);
+                  const leveragedReturn = getLeveragedReturnPct(
+                    signal.performance,
+                  );
                   const magnitude = Math.max(
                     16,
                     Math.min(100, Math.abs(leveragedReturn) * 4),
                   );
 
                   return (
-                    <div key={signal._id} className="flex-1 flex flex-col items-center gap-2">
+                    <div
+                      key={signal._id}
+                      className="flex-1 flex flex-col items-center gap-2"
+                    >
                       <span className="text-[11px] text-gray-500">
                         {leveragedReturn.toFixed(1)}%
                       </span>
@@ -439,9 +517,12 @@ const Signals = () => {
             </GlassCard>
 
             <GlassCard className="p-6">
-              <h2 className="text-xl font-semibold text-white mb-2">By Timeframe</h2>
+              <h2 className="text-xl font-semibold text-white mb-2">
+                By Timeframe
+              </h2>
               <p className="text-sm text-gray-400 mb-5">
-                Breakdown of resolved futures signals, win rate, and average leveraged return by timeframe.
+                Breakdown of resolved futures signals, win rate, and average
+                leveraged return by timeframe.
               </p>
               <div className="space-y-4">
                 {(summary?.byTimeframe || []).map((item) => (
@@ -451,11 +532,17 @@ const Signals = () => {
                   >
                     <div className="flex justify-between items-center mb-3">
                       <div>
-                        <p className="text-white font-medium">{item.timeframe}</p>
-                        <p className="text-xs text-gray-500">{item.total} resolved signals</p>
+                        <p className="text-white font-medium">
+                          {item.timeframe}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {item.total} resolved signals
+                        </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-green-400 font-semibold">{item.winRate.toFixed(1)}%</p>
+                        <p className="text-green-400 font-semibold">
+                          {item.winRate.toFixed(1)}%
+                        </p>
                         <p className="text-xs text-gray-500">Win rate</p>
                       </div>
                     </div>
@@ -465,10 +552,14 @@ const Signals = () => {
                         <p className="text-white font-semibold">{item.wins}</p>
                       </div>
                       <div className="rounded-lg bg-white/[0.03] p-3">
-                        <p className="text-gray-500 mb-1">Avg Leveraged Return</p>
+                        <p className="text-gray-500 mb-1">
+                          Avg Leveraged Return
+                        </p>
                         <p
                           className={`font-semibold ${
-                            item.avgReturnPct >= 0 ? "text-emerald-400" : "text-red-400"
+                            item.avgReturnPct >= 0
+                              ? "text-emerald-400"
+                              : "text-red-400"
                           }`}
                         >
                           {item.avgReturnPct >= 0 ? "+" : ""}
@@ -478,8 +569,11 @@ const Signals = () => {
                     </div>
                   </div>
                 ))}
-                {(!summary?.byTimeframe || summary.byTimeframe.length === 0) && (
-                  <p className="text-sm text-gray-500">No timeframe performance data yet.</p>
+                {(!summary?.byTimeframe ||
+                  summary.byTimeframe.length === 0) && (
+                  <p className="text-sm text-gray-500">
+                    No timeframe performance data yet.
+                  </p>
                 )}
               </div>
             </GlassCard>
@@ -551,7 +645,9 @@ const Signals = () => {
 
           {!loading && signals.length > 0 && (
             <GlassCard className="p-6">
-              <h3 className="text-lg font-semibold text-white mb-4">Current Futures Signal Mix</h3>
+              <h3 className="text-lg font-semibold text-white mb-4">
+                Current Futures Signal Mix
+              </h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center">
                   <p className="text-3xl font-bold text-green-400">
@@ -589,16 +685,21 @@ const Signals = () => {
             <GlassCard className="p-6 xl:col-span-2">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-5">
                 <div>
-                  <h2 className="text-xl font-semibold text-white">Futures Backtest Runner</h2>
+                  <h2 className="text-xl font-semibold text-white">
+                    Futures Backtest Runner
+                  </h2>
                   <p className="text-sm text-gray-400 mt-1">
-                    Replay historical futures candles for the selected contract using the current signal logic.
+                    Replay historical futures candles with stop-loss,
+                    take-profit, and intrabar resolution handling.
                   </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">Timeframe</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Timeframe
+                  </span>
                   <select
                     value={backtestConfig.timeframe}
                     onChange={(e) =>
@@ -610,7 +711,11 @@ const Signals = () => {
                     className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
                   >
                     {["1m", "5m", "15m", "1h", "4h", "1d"].map((timeframe) => (
-                      <option key={timeframe} value={timeframe} className="bg-gray-800 text-white">
+                      <option
+                        key={timeframe}
+                        value={timeframe}
+                        className="bg-gray-800 text-white"
+                      >
                         {timeframe}
                       </option>
                     ))}
@@ -618,7 +723,9 @@ const Signals = () => {
                 </label>
 
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">History Candles</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    History Candles
+                  </span>
                   <input
                     type="number"
                     min="60"
@@ -635,7 +742,9 @@ const Signals = () => {
                 </label>
 
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">Analysis Window</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Analysis Window
+                  </span>
                   <input
                     type="number"
                     min="26"
@@ -652,7 +761,9 @@ const Signals = () => {
                 </label>
 
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">Resolution Candles</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Resolution Candles
+                  </span>
                   <input
                     type="number"
                     min="1"
@@ -669,7 +780,38 @@ const Signals = () => {
                 </label>
 
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">Leverage</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Intrabar Policy
+                  </span>
+                  <select
+                    value={backtestConfig.intrabarPolicy}
+                    onChange={(e) =>
+                      setBacktestConfig((current) => ({
+                        ...current,
+                        intrabarPolicy: e.target.value,
+                      }))
+                    }
+                    className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    <option
+                      value="conservative"
+                      className="bg-gray-800 text-white"
+                    >
+                      Conservative
+                    </option>
+                    <option
+                      value="optimistic"
+                      className="bg-gray-800 text-white"
+                    >
+                      Optimistic
+                    </option>
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Leverage
+                  </span>
                   <input
                     type="number"
                     min="1"
@@ -680,7 +822,10 @@ const Signals = () => {
                         ...current,
                         leverage: Math.min(
                           125,
-                          Math.max(1, Number(e.target.value) || defaultLeverage),
+                          Math.max(
+                            1,
+                            Number(e.target.value) || defaultLeverage,
+                          ),
                         ),
                       }))
                     }
@@ -689,7 +834,42 @@ const Signals = () => {
                 </label>
 
                 <label className="block">
-                  <span className="text-sm text-gray-400 mb-2 block">Sample Trades</span>
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    ML Model
+                  </span>
+                  <select
+                    value={backtestConfig.backtestMlModel}
+                    onChange={(e) =>
+                      setBacktestConfig((current) => ({
+                        ...current,
+                        backtestMlModel: e.target.value,
+                      }))
+                    }
+                    disabled={mlLifecycleLoading}
+                    className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50"
+                  >
+                    <option value="off" className="bg-gray-800 text-white">
+                      Off
+                    </option>
+                    {availableMlModels.map((model) => (
+                      <option
+                        key={model.modelVersion}
+                        value={model.modelVersion}
+                        className="bg-gray-800 text-white"
+                      >
+                        {model.modelVersion}
+                        {model.modelVersion === activeMlModelVersion
+                          ? " (Active)"
+                          : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-sm text-gray-400 mb-2 block">
+                    Sample Trades
+                  </span>
                   <input
                     type="number"
                     min="5"
@@ -708,9 +888,17 @@ const Signals = () => {
 
               <div className="mt-4 text-sm text-gray-400">
                 Running on futures market:{" "}
-                <span className="text-white font-medium">{currentSymbolLabel}/USDT</span>
-                {" "}at{" "}
-                <span className="text-white font-medium">{backtestConfig.leverage}x</span>
+                <span className="text-white font-medium">
+                  {currentSymbolLabel}/USDT
+                </span>{" "}
+                at{" "}
+                <span className="text-white font-medium">
+                  {backtestConfig.leverage}x
+                </span>{" "}
+                with{" "}
+                <span className="text-white font-medium">
+                  {backtestConfig.backtestMlModel || "off"}
+                </span>
               </div>
 
               {backtestError && (
@@ -721,14 +909,70 @@ const Signals = () => {
             </GlassCard>
 
             <GlassCard className="p-6">
-              <h2 className="text-xl font-semibold text-white mb-5">Futures Backtest Dataset</h2>
+              <div className="flex flex-col gap-4 mb-5">
+                <div>
+                  <h2 className="text-xl font-semibold text-white">
+                    Futures Backtest Detail
+                  </h2>
+                  <p className="text-sm text-gray-400 mt-1">
+                    Choose the market and ML behavior, then launch the
+                    simulation from here.
+                  </p>
+                </div>
+                <select
+                  value={selectedSymbol}
+                  onChange={(e) => setSelectedSymbol(e.target.value)}
+                  disabled={watchlistLoading || watchlistAssets.length === 0}
+                  className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50"
+                >
+                  {watchlistAssets.length === 0 ? (
+                    <option value="" className="bg-gray-800 text-white">
+                      {watchlistLoading
+                        ? "Loading watchlist..."
+                        : "No watchlist coins found"}
+                    </option>
+                  ) : (
+                    watchlistAssets.map((asset) => (
+                      <option
+                        key={asset.symbol}
+                        value={asset.symbol}
+                        className="bg-gray-800 text-white"
+                      >
+                        {asset.symbol.replace("USDT", "")}/USDT
+                      </option>
+                    ))
+                  )}
+                </select>
+                <button
+                  onClick={runBacktest}
+                  disabled={
+                    backtestLoading ||
+                    watchlistLoading ||
+                    watchlistAssets.length === 0
+                  }
+                  className="w-full px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-900/60 text-white rounded-lg font-medium transition-colors"
+                >
+                  {backtestLoading
+                    ? "Running Futures Backtest..."
+                    : "Run Futures Backtest"}
+                </button>
+              </div>
+
+              <h2 className="text-xl font-semibold text-white mb-5">
+                Futures Backtest Dataset
+              </h2>
               {backtestResult ? (
                 <div className="space-y-4 text-sm">
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
                     <p className="text-gray-500 mb-1">Candle Range</p>
                     <p className="text-white font-medium">
-                      {new Date(backtestResult.dataset.firstCandleAt).toLocaleDateString()} -{" "}
-                      {new Date(backtestResult.dataset.lastCandleAt).toLocaleDateString()}
+                      {new Date(
+                        backtestResult.dataset.firstCandleAt,
+                      ).toLocaleDateString()}{" "}
+                      -{" "}
+                      {new Date(
+                        backtestResult.dataset.lastCandleAt,
+                      ).toLocaleDateString()}
                     </p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
@@ -740,13 +984,31 @@ const Signals = () => {
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
                     <p className="text-gray-500 mb-1">Skipped HOLD Signals</p>
                     <p className="text-white font-medium">
-                      {(backtestResult.dataset.skippedHoldSignals || 0).toLocaleString()}
+                      {(
+                        backtestResult.dataset.skippedHoldSignals || 0
+                      ).toLocaleString()}
                     </p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                    <p className="text-gray-500 mb-1">Resolution Horizon</p>
+                    <p className="text-gray-500 mb-1">Max Holding Horizon</p>
                     <p className="text-white font-medium">
                       {backtestResult.config.resolutionCandles} candle(s)
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-gray-500 mb-1">Simulation Model</p>
+                    <p className="text-white font-medium">
+                      {backtestResult.config.mlEnabled
+                        ? backtestResult.config.simulationModel
+                        : "None"}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-gray-500 mb-1">
+                      ML Model for Backtesting
+                    </p>
+                    <p className="text-white font-medium">
+                      {backtestResult.config.mlModel || "off"}
                     </p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
@@ -761,11 +1023,34 @@ const Signals = () => {
                       {backtestResult.config.analysisWindow} candles
                     </p>
                   </div>
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-gray-500 mb-1">Intrabar Policy</p>
+                    <p className="text-white font-medium capitalize">
+                      {backtestResult.config.intrabarPolicy}
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">
-                  Run a futures backtest to inspect the historical dataset and simulation settings.
-                </p>
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-gray-500 mb-1">Selected Market</p>
+                    <p className="text-white font-medium">
+                      {currentSymbolLabel}/USDT
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-gray-500 mb-1">
+                      ML Model for Backtesting
+                    </p>
+                    <p className="text-white font-medium">
+                      {backtestConfig.backtestMlModel || "off"}
+                    </p>
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    Run a futures backtest to inspect the historical dataset and
+                    simulation settings.
+                  </p>
+                </div>
               )}
             </GlassCard>
           </div>
@@ -773,7 +1058,9 @@ const Signals = () => {
           {backtestResult && (
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
               <GlassCard className="p-6 xl:col-span-2">
-                <h2 className="text-xl font-semibold text-white mb-5">Futures Backtest Summary</h2>
+                <h2 className="text-xl font-semibold text-white mb-5">
+                  Futures Backtest Summary
+                </h2>
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   {backtestSummaryCards.map((card) => (
                     <div
@@ -781,7 +1068,9 @@ const Signals = () => {
                       className="rounded-xl border border-white/10 bg-white/[0.04] p-4"
                     >
                       <p className="text-sm text-gray-400 mb-2">{card.label}</p>
-                      <p className={`text-2xl font-bold ${card.tone}`}>{card.value}</p>
+                      <p className={`text-2xl font-bold ${card.tone}`}>
+                        {card.value}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -793,17 +1082,25 @@ const Signals = () => {
                     >
                       <div className="flex justify-between items-center mb-2">
                         <p className="text-white font-medium">{item.type}</p>
-                        <p className="text-gray-400 text-sm">{item.total} signals</p>
+                        <p className="text-gray-400 text-sm">
+                          {item.total} signals
+                        </p>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-500">Win Rate</span>
-                        <span className="text-green-400">{item.winRate.toFixed(1)}%</span>
+                        <span className="text-green-400">
+                          {item.winRate.toFixed(1)}%
+                        </span>
                       </div>
                       <div className="flex justify-between text-sm mt-1">
-                        <span className="text-gray-500">Avg Leveraged Return</span>
+                        <span className="text-gray-500">
+                          Avg Leveraged Return
+                        </span>
                         <span
                           className={
-                            item.avgReturnPct >= 0 ? "text-emerald-400" : "text-red-400"
+                            item.avgReturnPct >= 0
+                              ? "text-emerald-400"
+                              : "text-red-400"
                           }
                         >
                           {item.avgReturnPct >= 0 ? "+" : ""}
@@ -816,7 +1113,9 @@ const Signals = () => {
               </GlassCard>
 
               <GlassCard className="p-6">
-                <h2 className="text-xl font-semibold text-white mb-5">Futures Backtest Outcomes</h2>
+                <h2 className="text-xl font-semibold text-white mb-5">
+                  Futures Backtest Outcomes
+                </h2>
                 <div className="space-y-4">
                   {(backtestResult.summary.byOutcome || []).map((item) => (
                     <div key={item.outcome}>
@@ -847,11 +1146,43 @@ const Signals = () => {
 
           {backtestResult && (
             <GlassCard className="p-6">
+              <h2 className="text-xl font-semibold text-white mb-5">
+                Exit Breakdown
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                {(backtestResult.summary.byExitReason || []).map((item) => (
+                  <div
+                    key={item.exitReason}
+                    className="rounded-xl border border-white/10 bg-white/[0.04] p-4"
+                  >
+                    <p className="text-sm text-gray-500 mb-2">
+                      {item.exitReason.replaceAll("_", " ")}
+                    </p>
+                    <p className="text-2xl font-bold text-white">
+                      {item.total}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      {item.rate.toFixed(1)}% of trades
+                    </p>
+                    <p className="text-xs text-green-400 mt-1">
+                      {item.winRate.toFixed(1)}% win rate
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          )}
+
+          {backtestResult && (
+            <GlassCard className="p-6">
               <div className="flex justify-between items-center mb-4">
                 <div>
-                  <h2 className="text-xl font-semibold text-white">Recent Simulated Futures Trades</h2>
+                  <h2 className="text-xl font-semibold text-white">
+                    Recent Simulated Futures Trades
+                  </h2>
                   <p className="text-sm text-gray-400 mt-1">
-                    Sample results from the most recent backtested futures entries.
+                    Sample results from the most recent backtested futures
+                    entries.
                   </p>
                 </div>
               </div>
@@ -862,6 +1193,7 @@ const Signals = () => {
                       <th className="py-3 pr-4 font-medium">Opened</th>
                       <th className="py-3 pr-4 font-medium">Type</th>
                       <th className="py-3 pr-4 font-medium">Outcome</th>
+                      <th className="py-3 pr-4 font-medium">Exit</th>
                       <th className="py-3 pr-4 font-medium">Entry</th>
                       <th className="py-3 pr-4 font-medium">Resolved</th>
                       <th className="py-3 pr-4 font-medium">Leverage</th>
@@ -871,11 +1203,16 @@ const Signals = () => {
                   </thead>
                   <tbody>
                     {backtestTrades.map((trade) => (
-                      <tr key={`${trade.createdAt}-${trade.type}`} className="border-b border-white/5">
+                      <tr
+                        key={`${trade.createdAt}-${trade.type}`}
+                        className="border-b border-white/5"
+                      >
                         <td className="py-3 pr-4 text-gray-300">
                           {new Date(trade.createdAt).toLocaleString()}
                         </td>
-                        <td className="py-3 pr-4 text-white font-medium">{trade.type}</td>
+                        <td className="py-3 pr-4 text-white font-medium">
+                          {trade.type}
+                        </td>
                         <td
                           className={`py-3 pr-4 font-medium ${
                             trade.outcome === "WIN"
@@ -887,11 +1224,21 @@ const Signals = () => {
                         >
                           {trade.outcome}
                         </td>
-                        <td className="py-3 pr-4 text-gray-300">${trade.price.entry.toFixed(2)}</td>
+                        <td className="py-3 pr-4 text-gray-300 capitalize">
+                          {(trade.simulation?.exitReason || "n/a").replaceAll(
+                            "_",
+                            " ",
+                          )}
+                        </td>
+                        <td className="py-3 pr-4 text-gray-300">
+                          ${trade.price.entry.toFixed(2)}
+                        </td>
                         <td className="py-3 pr-4 text-gray-300">
                           ${trade.price.resolution.toFixed(2)}
                         </td>
-                        <td className="py-3 pr-4 text-gray-300">{trade.leverage}x</td>
+                        <td className="py-3 pr-4 text-gray-300">
+                          {trade.leverage}x
+                        </td>
                         <td
                           className={`py-3 pr-4 font-medium ${
                             getLeveragedReturnPct(trade.performance) >= 0
@@ -899,10 +1246,14 @@ const Signals = () => {
                               : "text-red-400"
                           }`}
                         >
-                          {getLeveragedReturnPct(trade.performance) >= 0 ? "+" : ""}
+                          {getLeveragedReturnPct(trade.performance) >= 0
+                            ? "+"
+                            : ""}
                           {getLeveragedReturnPct(trade.performance).toFixed(2)}%
                         </td>
-                        <td className="py-3 text-gray-300">{trade.confidence}%</td>
+                        <td className="py-3 text-gray-300">
+                          {trade.confidence}%
+                        </td>
                       </tr>
                     ))}
                   </tbody>

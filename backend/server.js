@@ -133,15 +133,14 @@ io.on("connection", (socket) => {
 // Make io accessible to routes
 app.set("io", io);
 
-// Import signal generator
-import {
-  startSignalGenerator,
-  stopSignalGenerator,
-} from "./services/signalGenerator.js";
 import {
   startSignalResolutionJob,
   stopSignalResolutionJob,
 } from "./services/signalService.js";
+import {
+  startMlRetrainingJob,
+  stopMlRetrainingJob,
+} from "./services/mlLifecycleService.js";
 
 // Global error handler middleware
 app.use((err, req, res, next) => {
@@ -161,16 +160,15 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 
-  // Start AI signal generator (runs every 60 minutes to save API costs)
-  startSignalGenerator(60);
   startSignalResolutionJob(5);
+  startMlRetrainingJob();
 });
 
 // Handle graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
-  stopSignalGenerator();
   stopSignalResolutionJob();
+  stopMlRetrainingJob();
   binanceWS.closeAll();
   server.close(() => {
     console.log("HTTP server closed");
@@ -179,8 +177,8 @@ process.on("SIGTERM", () => {
 
 process.on("SIGINT", () => {
   console.log("SIGINT signal received: closing HTTP server");
-  stopSignalGenerator();
   stopSignalResolutionJob();
+  stopMlRetrainingJob();
   binanceWS.closeAll();
   server.close(() => {
     console.log("HTTP server closed");

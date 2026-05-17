@@ -4,6 +4,7 @@ import api from "../../api/api";
 
 const AISignalsSummary = () => {
   const [signals, setSignals] = useState([]);
+  const [mlSummary, setMlSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -11,9 +12,13 @@ const AISignalsSummary = () => {
 
     const fetchSignals = async () => {
       try {
-        const response = await api.get("/signals?limit=5");
+        const [signalsResponse, mlResponse] = await Promise.all([
+          api.get("/signals?limit=5"),
+          api.get("/signals/stats/ml-summary"),
+        ]);
         if (isMounted) {
-          setSignals(response.data.data || []);
+          setSignals(signalsResponse.data.data || []);
+          setMlSummary(mlResponse.data?.data || null);
         }
       } catch (error) {
         console.error("Error fetching signals:", error);
@@ -127,6 +132,22 @@ const AISignalsSummary = () => {
                   <p className="text-xs text-gray-400">HOLD</p>
                 </div>
               </div>
+              {mlSummary && (
+                <div className="grid grid-cols-2 gap-2 text-center mt-3 pt-3 border-t border-white/10">
+                  <div>
+                    <p className="text-lg font-bold text-cyan-400">
+                      {mlSummary.mlCoverageRate.toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-gray-400">ML Coverage</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-blue-400">
+                      {mlSummary.avgMlProbabilityPct.toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-gray-400">Avg ML Prob.</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

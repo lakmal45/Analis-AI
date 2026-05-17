@@ -394,6 +394,66 @@ const Analysis = () => {
                       : "--"}
                   </span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">S/D Bias</span>
+                  <span
+                    className={`font-medium ${
+                      indicators.supplyDemand?.bias === "DEMAND"
+                        ? "text-green-400"
+                        : indicators.supplyDemand?.bias === "SUPPLY"
+                          ? "text-red-400"
+                          : "text-gray-300"
+                    }`}
+                  >
+                    {indicators.supplyDemand?.bias || "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Demand POI</span>
+                  <span className="font-medium text-cyan-400">
+                    {indicators.supplyDemand?.demand?.poi
+                      ? `$${indicators.supplyDemand.demand.poi.toFixed(2)}`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Supply POI</span>
+                  <span className="font-medium text-rose-400">
+                    {indicators.supplyDemand?.supply?.poi
+                      ? `$${indicators.supplyDemand.supply.poi.toFixed(2)}`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">FVG Bias</span>
+                  <span
+                    className={`font-medium ${
+                      indicators.fvg?.bias === "BULLISH"
+                        ? "text-green-400"
+                        : indicators.fvg?.bias === "BEARISH"
+                          ? "text-red-400"
+                          : "text-gray-300"
+                    }`}
+                  >
+                    {indicators.fvg?.bias || "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Bullish FVG</span>
+                  <span className="font-medium text-emerald-400">
+                    {indicators.fvg?.bullish?.bottom && indicators.fvg?.bullish?.top
+                      ? `$${indicators.fvg.bullish.bottom.toFixed(2)} - $${indicators.fvg.bullish.top.toFixed(2)}`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Bearish FVG</span>
+                  <span className="font-medium text-orange-400">
+                    {indicators.fvg?.bearish?.bottom && indicators.fvg?.bearish?.top
+                      ? `$${indicators.fvg.bearish.bottom.toFixed(2)} - $${indicators.fvg.bearish.top.toFixed(2)}`
+                      : "--"}
+                  </span>
+                </div>
               </div>
             ) : (
               <div className="text-gray-400">No data available</div>

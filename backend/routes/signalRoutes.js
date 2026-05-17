@@ -1,17 +1,22 @@
-import express from "express";
+﻿import express from "express";
+import BacktestRun from "../models/BacktestRun.js";
 import Signal from "../models/Signal.js";
 import { protect } from "../middleware/authMiddleware.js";
 import {
   DEFAULT_FUTURES_LEVERAGE,
-  generateSignal,
+  generateSignalWithMl,
   saveSignal,
   getActiveSignals,
   getSignalHistory,
+  getMlMonitoringSummary,
   getSignalPerformanceSummary,
   resolveSignal,
   updateSignalStatus,
 } from "../services/signalService.js";
-import { runSignalBacktest } from "../services/backtestService.js";
+import {
+  runSignalBacktest,
+  saveSignalBacktest,
+} from "../services/backtestService.js";
 import { getKlines, resolveToMarketSymbol } from "../services/marketService.js";
 
 const router = express.Router();
@@ -94,10 +99,10 @@ router.get("/history", protect, async (req, res) => {
 /**
  * @route   GET /api/signals/analyze/:symbol
  * @desc    Analyze a symbol and return signal without saving
- * @access  Public
+ * @access  Private
  * NOTE: This route MUST be defined BEFORE /:id to prevent route collision
  */
-router.get("/analyze/:symbol", async (req, res) => {
+router.get("/analyze/:symbol", protect, async (req, res) => {
   try {
     const { symbol } = req.params;
     const { timeframe = "1h", leverage } = req.query;
@@ -114,7 +119,7 @@ router.get("/analyze/:symbol", async (req, res) => {
     const klineData = await getKlines(
       marketSymbol,
       timeframe,
-      100,
+      210,
     );
 
     if (!klineData || klineData.length < 26) {
@@ -125,7 +130,7 @@ router.get("/analyze/:symbol", async (req, res) => {
     }
 
     // Generate signal (without saving)
-    const signalData = generateSignal(marketSymbol, klineData, {
+    const signalData = await generateSignalWithMl(marketSymbol, klineData, {
       timeframe,
       leverage: parseLeverage(leverage),
     });
@@ -143,36 +148,6 @@ router.get("/analyze/:symbol", async (req, res) => {
     });
   } catch (error) {
     console.error("Error analyzing symbol:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route   GET /api/signals/:id
- * @desc    Get single signal by ID
- * @access  Public
- */
-router.get("/:id", async (req, res) => {
-  try {
-    const signal = await Signal.findById(req.params.id);
-
-    if (!signal) {
-      return res.status(404).json({
-        success: false,
-        message: "Signal not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: signal,
-    });
-  } catch (error) {
-    console.error("Error fetching signal:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -206,7 +181,7 @@ router.post("/generate", protect, async (req, res) => {
     }
 
     // Fetch candlestick data
-    const klineData = await getKlines(marketSymbol, timeframe, 100);
+    const klineData = await getKlines(marketSymbol, timeframe, 210);
 
     if (!klineData || klineData.length < 26) {
       return res.status(400).json({
@@ -216,7 +191,7 @@ router.post("/generate", protect, async (req, res) => {
     }
 
     // Generate signal
-    const signalData = generateSignal(marketSymbol, klineData, {
+    const signalData = await generateSignalWithMl(marketSymbol, klineData, {
       timeframe,
       leverage: parseLeverage(leverage),
     });
@@ -361,16 +336,67 @@ router.put("/:id/resolve", protect, async (req, res) => {
 router.post("/backtest", protect, async (req, res) => {
   try {
     const result = await runSignalBacktest(req.body || {});
+    const savedBacktest = await saveSignalBacktest(result, req.user.id);
+    const { trades, ...responseResult } = result;
 
     res.json({
       success: true,
-      data: result,
+      data: {
+        ...responseResult,
+        backtestRunId: savedBacktest._id,
+        savedAt: savedBacktest.createdAt,
+        tradeCount: trades.length,
+      },
     });
   } catch (error) {
     console.error("Error running signal backtest:", error);
     res.status(400).json({
       success: false,
       message: error.message || "Failed to run backtest",
+    });
+  }
+});
+
+/**
+ * @route   GET /api/signals/backtest/history
+ * @desc    Get saved backtest runs for the authenticated user
+ * @access  Private
+ */
+router.get("/backtest/history", protect, async (req, res) => {
+  try {
+    const { symbol, limit = 10 } = req.query;
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+    const query = { userId: req.user.id };
+
+    if (symbol) {
+      query.symbol = symbol.toString().trim().toUpperCase();
+    }
+
+    const backtests = await BacktestRun.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parsedLimit)
+      .lean();
+
+    const historyItems = backtests.map(({ trades, ...backtest }) => ({
+      ...backtest,
+      tradeCount: Array.isArray(trades)
+        ? trades.length
+        : Array.isArray(backtest.recentTrades)
+          ? backtest.recentTrades.length
+          : 0,
+    }));
+
+    res.json({
+      success: true,
+      count: historyItems.length,
+      data: historyItems,
+    });
+  } catch (error) {
+    console.error("Error fetching backtest history:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
     });
   }
 });
@@ -391,6 +417,62 @@ router.get("/stats/summary", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching signal performance summary:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   GET /api/signals/stats/ml-summary
+ * @desc    Get ML monitoring summary and calibration metrics
+ * @access  Public
+ */
+router.get("/stats/ml-summary", async (req, res) => {
+  try {
+    const { symbol, timeframe } = req.query;
+    const summary = await getMlMonitoringSummary({ symbol, timeframe });
+
+    res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    console.error("Error fetching ML monitoring summary:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   GET /api/signals/:id
+ * @desc    Get single signal by ID
+ * @access  Public
+ * NOTE: This route MUST be defined AFTER all literal-path GET routes
+ *       to prevent /:id from matching paths like /stats/summary
+ */
+router.get("/:id", async (req, res) => {
+  try {
+    const signal = await Signal.findById(req.params.id);
+
+    if (!signal) {
+      return res.status(404).json({
+        success: false,
+        message: "Signal not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: signal,
+    });
+  } catch (error) {
+    console.error("Error fetching signal:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

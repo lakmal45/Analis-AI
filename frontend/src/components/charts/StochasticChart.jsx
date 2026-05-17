@@ -14,12 +14,15 @@ const StochasticChart = ({
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let isMounted = true;
+    let resizeHandler = null;
+    let chartInstance = null;
+
     const fetchDataAndCreateChart = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        // Fetch Stochastic data from backend
         const response = await fetch(
           `${API_URL}/api/indicators/${symbol}/stochastic?interval=${interval}&limit=100`,
         );
@@ -31,124 +34,76 @@ const StochasticChart = ({
         const result = await response.json();
         const { percentK, percentD } = result.data;
 
-        // Clear previous chart if exists
+        if (!isMounted) return;
+
         if (chartContainerRef.current) {
           chartContainerRef.current.innerHTML = "";
         }
 
-        // Create chart
         const chart = createChart(chartContainerRef.current, {
           width: chartContainerRef.current.clientWidth,
           height: height,
-          layout: {
-            backgroundColor: "#1f2937",
-            textColor: "#d1d5db",
-          },
-          grid: {
-            vertLines: {
-              color: "#374151",
-            },
-            horzLines: {
-              color: "#374151",
-            },
-          },
-          rightPriceScale: {
-            borderColor: "#374151",
-            minValue: 0,
-            maxValue: 100,
-          },
-          timeScale: {
-            borderColor: "#374151",
-            timeVisible: true,
-            secondsVisible: false,
-          },
+          layout: { backgroundColor: "#1f2937", textColor: "#d1d5db" },
+          grid: { vertLines: { color: "#374151" }, horzLines: { color: "#374151" } },
+          rightPriceScale: { borderColor: "#374151", minValue: 0, maxValue: 100 },
+          timeScale: { borderColor: "#374151", timeVisible: true, secondsVisible: false },
         });
 
-        // Add %K line
+        chartInstance = chart;
+
         const kSeries = chart.addSeries(LineSeries, {
-          color: "#3b82f6",
-          lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          color: "#3b82f6", lineWidth: 2,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
           title: "%K",
         });
         kSeries.setData(percentK);
 
-        // Add %D line
         const dSeries = chart.addSeries(LineSeries, {
-          color: "#ef4444",
-          lineWidth: 2,
-          priceFormat: {
-            type: "price",
-            precision: 2,
-            minMove: 0.01,
-          },
+          color: "#ef4444", lineWidth: 2,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
           title: "%D",
         });
         dSeries.setData(percentD);
 
-        // Add overbought line (80)
         const overboughtLine = chart.addSeries(LineSeries, {
-          color: "#ef4444",
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 0,
-          },
+          color: "#ef4444", lineWidth: 1, lineStyle: 2,
+          priceFormat: { type: "price", precision: 0 },
         });
-        const overboughtData = percentK.map((d) => ({
-          time: d.time,
-          value: 80,
-        }));
-        overboughtLine.setData(overboughtData);
+        overboughtLine.setData(percentK.map((d) => ({ time: d.time, value: 80 })));
 
-        // Add oversold line (20)
         const oversoldLine = chart.addSeries(LineSeries, {
-          color: "#22c55e",
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          priceFormat: {
-            type: "price",
-            precision: 0,
-          },
+          color: "#22c55e", lineWidth: 1, lineStyle: 2,
+          priceFormat: { type: "price", precision: 0 },
         });
-        const oversoldData = percentK.map((d) => ({ time: d.time, value: 20 }));
-        oversoldLine.setData(oversoldData);
+        oversoldLine.setData(percentK.map((d) => ({ time: d.time, value: 20 })));
 
-        // Fit content
         chart.timeScale().fitContent();
 
-        // Handle resize
-        const handleResize = () => {
+        resizeHandler = () => {
           if (chartContainerRef.current) {
-            chart.applyOptions({
-              width: chartContainerRef.current.clientWidth,
-            });
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
           }
         };
-
-        window.addEventListener("resize", handleResize);
+        window.addEventListener("resize", resizeHandler);
 
         chartRef.current = chart;
-
         setLoading(false);
-
-        return () => {
-          window.removeEventListener("resize", handleResize);
-          chart.remove();
-        };
       } catch (err) {
         console.error("Error creating Stochastic chart:", err);
-        setError(err.message);
-        setLoading(false);
+        if (isMounted) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
     fetchDataAndCreateChart();
+
+    return () => {
+      isMounted = false;
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      if (chartInstance) chartInstance.remove();
+    };
   }, [symbol, interval, height]);
 
   return (
