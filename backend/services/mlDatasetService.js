@@ -16,6 +16,10 @@ const FEATURE_KEYS = [
   "momentum.trix15",
   "momentum.ppoLine",
   "momentum.ppoHistogram",
+  // ── Momentum — WaveTrend (Lorentzian Classification) ─────
+  "momentum.waveTrend1",
+  "momentum.waveTrend2",
+  "momentum.waveTrendCross",
   // ── Trend ─────────────────────────────────────────────────
   "trend.ema20",
   "trend.ema50",
@@ -38,6 +42,12 @@ const FEATURE_KEYS = [
   "trend.psarDirection",
   "trend.psarDistancePct",
   "trend.linregValue",
+  // ── Trend — Kernel Regression (Lorentzian Classification) ─
+  "trend.kernelRqEstimate",
+  "trend.kernelGaussianEstimate",
+  "trend.kernelRateOfChange",
+  "trend.kernelCrossoverSignal",
+  "trend.priceVsKernelPct",
   // ── Volatility ────────────────────────────────────────────
   "volatility.atr14",
   "volatility.atrPct",
@@ -96,6 +106,11 @@ const FEATURE_KEYS = [
   "context.openPrice",
   "context.highPrice",
   "context.lowPrice",
+  // ── Lorentzian (KNN-based pattern similarity) ───────────
+  "lorentzian.distanceAvgK8",
+  "lorentzian.neighborLabelSum",
+  "lorentzian.bullishNeighborPct",
+  "lorentzian.distanceTrend",
 ];
 
 const CATEGORICAL_ENCODINGS = {
@@ -222,6 +237,21 @@ export const buildTrainingSampleFromSignal = (signal) => {
     resolvedAt: signal.resolvedAt ? new Date(signal.resolvedAt).toISOString() : null,
     marketPriceChangePct: safeNumber(signal.performance?.marketPriceChangePct),
     leveragedReturnPct: safeNumber(signal.performance?.leveragedReturnPct),
+    feesPerTradePct:
+      signal.performance?.feesPerTradePct === null ||
+      signal.performance?.feesPerTradePct === undefined
+        ? null
+        : safeNumber(signal.performance?.feesPerTradePct),
+    feeImpactPct:
+      signal.performance?.feeImpactPct === null ||
+      signal.performance?.feeImpactPct === undefined
+        ? null
+        : safeNumber(signal.performance?.feeImpactPct),
+    netLeveragedReturnPct:
+      signal.performance?.netLeveragedReturnPct === null ||
+      signal.performance?.netLeveragedReturnPct === undefined
+        ? null
+        : safeNumber(signal.performance?.netLeveragedReturnPct),
     exitReason: signal.simulation?.exitReason || signal.resolutionSource || null,
     features: flattenedFeatures,
   };
@@ -245,6 +275,9 @@ export const toTrainingRow = (sample) => {
     finalConfidence: sample.finalConfidence,
     marketPriceChangePct: sample.marketPriceChangePct,
     leveragedReturnPct: sample.leveragedReturnPct,
+    feesPerTradePct: sample.feesPerTradePct,
+    feeImpactPct: sample.feeImpactPct,
+    netLeveragedReturnPct: sample.netLeveragedReturnPct,
     ...sample.features,
   };
 };

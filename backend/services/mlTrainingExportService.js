@@ -20,6 +20,15 @@ export const DEFAULT_ML_CSV_PATH = path.join(
   DEFAULT_ML_DATA_DIR,
   "training-data.csv",
 );
+export const DEFAULT_MIN_RESOLVED_AT = "2026-05-21T00:00:00.000Z";
+
+const TRUSTED_SIGNAL_RESOLUTION_SOURCES = new Set([
+  "take_profit_gap",
+  "take_profit_intrabar",
+  "stop_loss_gap",
+  "stop_loss_intrabar",
+  "time_expiry",
+]);
 
 const escapeCsvValue = (value) => {
   if (value === null || value === undefined) {
@@ -85,8 +94,19 @@ const buildSourceQuery = (options = {}) => {
     query.timeframe = options.timeframe;
   }
 
-  if (options.minResolvedAt) {
-    query.resolvedAt = { $gte: new Date(options.minResolvedAt) };
+  const minResolvedAt =
+    options.minResolvedAt === null || options.minResolvedAt === false
+      ? null
+      : options.minResolvedAt || DEFAULT_MIN_RESOLVED_AT;
+
+  if (minResolvedAt) {
+    query.resolvedAt = { $gte: new Date(minResolvedAt) };
+  }
+
+  if (options.trustedResolutionOnly !== false) {
+    query.resolutionSource = {
+      $in: Array.from(TRUSTED_SIGNAL_RESOLUTION_SOURCES),
+    };
   }
 
   return query;
@@ -183,10 +203,20 @@ const exportSignalSamples = async (options = {}) => {
 };
 
 const exportBacktestSamples = async (options = {}) => {
+  const minResolvedAt =
+    options.minResolvedAt === null || options.minResolvedAt === false
+      ? null
+      : options.minResolvedAt || DEFAULT_MIN_RESOLVED_AT;
   const runQuery = {
     ...(options.symbol ? { symbol: options.symbol.toUpperCase() } : {}),
     ...(options.timeframe ? { "config.timeframe": options.timeframe } : {}),
+    ...(minResolvedAt ? { createdAt: { $gte: new Date(minResolvedAt) } } : {}),
   };
+
+  if (options.requireBacktestGuardrails !== false) {
+    runQuery["config.mlEnabled"] = true;
+    runQuery["config.applyAccuracyGuardrails"] = true;
+  }
 
   const backtestRuns = await BacktestRun.find(runQuery)
     .sort({ createdAt: 1 })
@@ -207,8 +237,8 @@ const exportBacktestSamples = async (options = {}) => {
       }
 
       if (
-        options.minResolvedAt &&
-        (!trade.resolvedAt || new Date(trade.resolvedAt) < new Date(options.minResolvedAt))
+        minResolvedAt &&
+        (!trade.resolvedAt || new Date(trade.resolvedAt) < new Date(minResolvedAt))
       ) {
         continue;
       }
@@ -232,6 +262,10 @@ export const exportTrainingDataset = async (options = {}) => {
   const jsonPath = options.jsonPath || DEFAULT_ML_JSON_PATH;
   const csvPath = options.csvPath || DEFAULT_ML_CSV_PATH;
   const source = normalizeSource(options.source || "combined");
+  const minResolvedAt =
+    options.minResolvedAt === null || options.minResolvedAt === false
+      ? null
+      : options.minResolvedAt || DEFAULT_MIN_RESOLVED_AT;
 
   let samples = [];
   if (source === "signals") {
@@ -254,7 +288,9 @@ export const exportTrainingDataset = async (options = {}) => {
       `source=${source}`,
       options.symbol ? `symbol=${options.symbol.toUpperCase()}` : null,
       options.timeframe ? `timeframe=${options.timeframe}` : null,
-      options.minResolvedAt ? `minResolvedAt=${new Date(options.minResolvedAt).toISOString()}` : null,
+      minResolvedAt ? `minResolvedAt=${new Date(minResolvedAt).toISOString()}` : null,
+      options.trustedResolutionOnly !== false ? "trustedResolutionOnly=true" : null,
+      options.requireBacktestGuardrails !== false ? "requireBacktestGuardrails=true" : null,
     ].filter(Boolean);
 
     const filterSummary = filters.length > 0 ? ` with filters (${filters.join(", ")})` : "";
@@ -282,9 +318,11 @@ export const exportTrainingDataset = async (options = {}) => {
           source,
           symbol: options.symbol || null,
           timeframe: options.timeframe || null,
-          minResolvedAt: options.minResolvedAt
-            ? new Date(options.minResolvedAt).toISOString()
+          minResolvedAt: minResolvedAt
+            ? new Date(minResolvedAt).toISOString()
             : null,
+          trustedResolutionOnly: options.trustedResolutionOnly !== false,
+          requireBacktestGuardrails: options.requireBacktestGuardrails !== false,
           limit: options.limit || null,
         },
         samples,
@@ -308,4 +346,5 @@ export default {
   exportTrainingDataset,
   DEFAULT_ML_JSON_PATH,
   DEFAULT_ML_CSV_PATH,
+  DEFAULT_MIN_RESOLVED_AT,
 };

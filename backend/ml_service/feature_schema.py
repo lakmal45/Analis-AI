@@ -16,6 +16,10 @@ FEATURE_COLUMNS = [
     "momentum.trix15",
     "momentum.ppoLine",
     "momentum.ppoHistogram",
+    # ── Momentum — WaveTrend (Lorentzian Classification) ─────
+    "momentum.waveTrend1",
+    "momentum.waveTrend2",
+    "momentum.waveTrendCross",
     # ── Trend ─────────────────────────────────────────────────
     "trend.ema20",
     "trend.ema50",
@@ -38,6 +42,12 @@ FEATURE_COLUMNS = [
     "trend.psarDirection",
     "trend.psarDistancePct",
     "trend.linregValue",
+    # ── Trend — Kernel Regression (Lorentzian Classification) ─
+    "trend.kernelRqEstimate",
+    "trend.kernelGaussianEstimate",
+    "trend.kernelRateOfChange",
+    "trend.kernelCrossoverSignal",
+    "trend.priceVsKernelPct",
     # ── Volatility ────────────────────────────────────────────
     "volatility.atr14",
     "volatility.atrPct",
@@ -96,4 +106,9 @@ FEATURE_COLUMNS = [
     "context.openPrice",
     "context.highPrice",
     "context.lowPrice",
+    # ── Lorentzian (KNN-based pattern similarity) ─────────────
+    "lorentzian.distanceAvgK8",
+    "lorentzian.neighborLabelSum",
+    "lorentzian.bullishNeighborPct",
+    "lorentzian.distanceTrend",
 ]

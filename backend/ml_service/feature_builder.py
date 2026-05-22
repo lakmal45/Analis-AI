@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import math
+import os
 from typing import Any
 
 import pandas as pd
 import pandas_ta as ta  # type: ignore[import-untyped]
+
+# ─── Configurable Kernel Regression parameters ──────────────────────
+# These control the Nadaraya-Watson kernel regression behaviour.
+# See: Machine Learning Lorentzian Classification by @jdehorty
+KERNEL_LOOKBACK = int(os.environ.get("KERNEL_LOOKBACK", "8"))
+KERNEL_RELATIVE_WEIGHT = float(os.environ.get("KERNEL_RELATIVE_WEIGHT", "8.0"))
+KERNEL_START_BAR = int(os.environ.get("KERNEL_START_BAR", "25"))
+KERNEL_LAG = int(os.environ.get("KERNEL_LAG", "2"))
 
 
 def _safe_number(value: Any) -> float | None:
@@ -19,8 +29,13 @@ def _safe_number(value: Any) -> float | None:
 
 
 def _safe_bool(value: Any) -> bool | None:
-    if value is None or pd.isna(value):
+    if value is None:
         return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     return bool(value)
 
 
@@ -62,6 +77,7 @@ def _resolve_trend_direction(
     if close_price is None or ema20 is None or sma20 is None:
         return "UNKNOWN"
 
+    # STRONG_ labels require all four conditions — sma200 must be present
     if sma200 is not None:
         if close_price > ema20 > sma20 > sma200:
             return "STRONG_BULLISH"
@@ -134,9 +150,17 @@ def _latest_swing_level(
             continue
 
         if source_column == "high":
-            is_pivot = all(candidate > value for offset, value in enumerate(filtered) if offset != swing_length)
+            is_pivot = all(
+                candidate > value
+                for offset, value in enumerate(filtered)
+                if offset != swing_length
+            )
         else:
-            is_pivot = all(candidate < value for offset, value in enumerate(filtered) if offset != swing_length)
+            is_pivot = all(
+                candidate < value
+                for offset, value in enumerate(filtered)
+                if offset != swing_length
+            )
 
         if is_pivot:
             return candidate, idx
@@ -192,7 +216,47 @@ def _calculate_supply_demand(
     }
 
 
+def _is_close_below(close_value: Any, threshold: float) -> bool:
+    """
+    Return True if close_value is a valid finite number strictly below threshold.
+
+    FIX: Replaces the previous `(_safe_number(close_value) or float("inf")) < threshold`
+    pattern which had a zero-price trap: Python's `or` treats 0 as falsy, so a close
+    price of exactly 0 would substitute float("inf") and never register as invalidating.
+    While crypto prices are never 0, the logic was semantically wrong and masked None
+    returns from _safe_number incorrectly. Explicit None guard is correct.
+    """
+    parsed = _safe_number(close_value)
+    if parsed is None:
+        return False
+    return parsed < threshold
+
+
+def _is_close_above(close_value: Any, threshold: float) -> bool:
+    """
+    Return True if close_value is a valid finite number strictly above threshold.
+
+    FIX: Same zero-price trap fix as _is_close_below, for the bear FVG case which
+    previously used `(_safe_number(close_value) or float("-inf")) > threshold`.
+    """
+    parsed = _safe_number(close_value)
+    if parsed is None:
+        return False
+    return parsed > threshold
+
+
 def _find_active_fvg(frame: pd.DataFrame, direction: str) -> dict[str, Any] | None:
+    """
+    Find the most recent active Fair Value Gap in the given direction.
+
+    FIX 1: Removed the non-standard `same_type` (all-same-color candle) requirement.
+    Standard ICT FVG only requires the 3-candle gap condition. The same_type check
+    is not part of the classic definition and significantly under-detects real gaps.
+
+    FIX 2: FVG invalidation now uses explicit None guards (_is_close_below /
+    _is_close_above) instead of the `or float("inf")` pattern which silently
+    treated a close of 0 as a non-invalidating value.
+    """
     if len(frame) < 3:
         return None
 
@@ -206,35 +270,35 @@ def _find_active_fvg(frame: pd.DataFrame, direction: str) -> dict[str, Any] | No
         middle_close = _safe_number(middle["close"])
         first_high = _safe_number(first["high"])
         first_low = _safe_number(first["low"])
+
         if None in (current_low, current_high, middle_close, first_high, first_low):
             continue
 
-        same_type = (
-            _safe_number(current["close"]) >= _safe_number(current["open"])
-        ) == (
-            _safe_number(middle["close"]) >= _safe_number(middle["open"])
-        ) == (
-            _safe_number(first["close"]) >= _safe_number(first["open"])
-        )
-
         if direction == "bull":
-            if not (current_low > first_high and middle_close > first_high and same_type):
+            # Bull FVG: gap between first candle's high and current candle's low
+            if not (current_low > first_high and middle_close > first_high):
                 continue
 
             min_value = first_high
             max_value = current_low
+
+            # Invalidated if any subsequent close drops back below the gap floor
             invalidated = any(
-                (_safe_number(close_value) or float("inf")) < min_value
+                _is_close_below(close_value, min_value)
                 for close_value in frame["close"].iloc[idx + 1 :]
             )
+
         else:
-            if not (current_high < first_low and middle_close < first_low and same_type):
+            # Bear FVG: gap between first candle's low and current candle's high
+            if not (current_high < first_low and middle_close < first_low):
                 continue
 
             min_value = current_high
             max_value = first_low
+
+            # Invalidated if any subsequent close rises back above the gap ceiling
             invalidated = any(
-                (_safe_number(close_value) or float("-inf")) > max_value
+                _is_close_above(close_value, max_value)
                 for close_value in frame["close"].iloc[idx + 1 :]
             )
 
@@ -242,7 +306,10 @@ def _find_active_fvg(frame: pd.DataFrame, direction: str) -> dict[str, Any] | No
             return {
                 "min": min_value,
                 "max": max_value,
-                "sizePct": _pct(max_value - min_value, min_value if direction == "bull" else max_value),
+                "sizePct": _pct(
+                    max_value - min_value,
+                    min_value if direction == "bull" else max_value,
+                ),
             }
 
     return None
@@ -283,13 +350,203 @@ def _calculate_fvg_structure(frame: pd.DataFrame, latest_close: float | None) ->
     }
 
 
-def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any] | None = None) -> dict[str, Any]:
+# ──────────────────────────────────────────────────────────────────────
+# Nadaraya-Watson Kernel Regression
+# Ported from jdehorty/KernelFunctions (PineScript) for the
+# Lorentzian Classification integration.
+# ──────────────────────────────────────────────────────────────────────
+
+def _rational_quadratic_kernel(
+    src: pd.Series,
+    lookback: int = KERNEL_LOOKBACK,
+    relative_weight: float = KERNEL_RELATIVE_WEIGHT,
+    start_bar: int = KERNEL_START_BAR,
+) -> pd.Series:
+    """Nadaraya-Watson estimator with Rational Quadratic Kernel.
+
+    The RQ kernel is a weighted sum over past values where the weight
+    decays as a function of squared distance, modulated by *relative_weight*.
+    As *relative_weight* → ∞ the kernel converges to Gaussian.
+    """
+    size = len(src)
+    result = pd.Series(index=src.index, dtype=float)
+    for i in range(size):
+        if i < start_bar:
+            result.iloc[i] = src.iloc[i]
+            continue
+        w_sum = 0.0
+        wv_sum = 0.0
+        for j in range(min(start_bar, i + 1)):
+            w = (1 + (j * j) / (2 * relative_weight * lookback * lookback)) ** (
+                -relative_weight
+            )
+            wv_sum += src.iloc[i - j] * w
+            w_sum += w
+        result.iloc[i] = wv_sum / w_sum if w_sum > 0 else src.iloc[i]
+    return result
+
+
+def _gaussian_kernel(
+    src: pd.Series,
+    lookback: int = KERNEL_LOOKBACK,
+    start_bar: int = KERNEL_START_BAR,
+) -> pd.Series:
+    """Nadaraya-Watson estimator with Gaussian Kernel."""
+    size = len(src)
+    result = pd.Series(index=src.index, dtype=float)
+    for i in range(size):
+        if i < start_bar:
+            result.iloc[i] = src.iloc[i]
+            continue
+        w_sum = 0.0
+        wv_sum = 0.0
+        for j in range(min(start_bar, i + 1)):
+            w = math.exp(-0.5 * (j * j) / (lookback * lookback))
+            wv_sum += src.iloc[i - j] * w
+            w_sum += w
+        result.iloc[i] = wv_sum / w_sum if w_sum > 0 else src.iloc[i]
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────
+# WaveTrend Oscillator
+# Adapted from LazyBear's implementation, used as Feature 2 in the
+# Lorentzian Classification indicator.
+# ──────────────────────────────────────────────────────────────────────
+
+def _wave_trend(
+    hlc3: pd.Series, channel_len: int = 10, avg_len: int = 11
+) -> tuple[pd.Series, pd.Series]:
+    """Compute WaveTrend oscillator (WT1 and WT2 lines)."""
+    esa = hlc3.ewm(span=channel_len, adjust=False).mean()
+    d = (hlc3 - esa).abs().ewm(span=channel_len, adjust=False).mean()
+    ci = (hlc3 - esa) / (0.015 * d.replace(0, 1))
+    wt1 = ci.ewm(span=avg_len, adjust=False).mean()
+    wt2 = wt1.rolling(window=4).mean()
+    return wt1, wt2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lorentzian Distance — KNN-based pattern similarity
+# Core concept from Machine Learning: Lorentzian Classification.
+# Uses Lorentzian distance d = Σ log(1 + |xᵢ − yᵢ|) instead of
+# Euclidean distance to reduce outlier influence.
+# ──────────────────────────────────────────────────────────────────────
+
+def _lorentzian_distance(features_a: list[float], features_b: list[float]) -> float:
+    """Lorentzian distance metric: Σ log(1 + |xᵢ − yᵢ|)."""
+    return sum(
+        math.log(1 + abs(a - b))
+        for a, b in zip(features_a, features_b)
+        if a is not None and b is not None
+    )
+
+
+def _compute_lorentzian_features(
+    close_series: pd.Series,
+    rsi_series: pd.Series | None,
+    cci_series: pd.Series | None,
+    adx_series: pd.Series | None,
+    stoch_k_series: pd.Series | None,
+    roc_series: pd.Series | None,
+    neighbors_count: int = 8,
+    max_bars_back: int = 500,
+) -> dict[str, Any]:
+    """Compute Lorentzian KNN features from historical indicator data.
+
+    Builds a feature vector [RSI, CCI, ADX, StochK, ROC] for each bar,
+    then uses the Approximate Nearest Neighbors (ANN) algorithm from
+    the Lorentzian Classification to find k-nearest neighbors with
+    enforced 4-bar chronological spacing.
+    """
+    empty = {
+        "distanceAvgK8": None,
+        "neighborLabelSum": None,
+        "bullishNeighborPct": None,
+        "distanceTrend": None,
+    }
+    size = len(close_series)
+    if size < 50:
+        return empty
+
+    # Align all series to the close_series index
+    def _aligned(series: pd.Series | None, default: float = 50.0) -> list[float]:
+        if series is None or series.empty:
+            return [default] * size
+        reindexed = series.reindex(close_series.index)
+        return [_safe_number(v) or default for v in reindexed]
+
+    rsi_vals = _aligned(rsi_series, 50.0)
+    cci_vals = _aligned(cci_series, 0.0)
+    adx_vals = _aligned(adx_series, 25.0)
+    stk_vals = _aligned(stoch_k_series, 50.0)
+    roc_vals = _aligned(roc_series, 0.0)
+
+    # Build feature matrix and labels (price 4 bars later > current = bullish)
+    feature_matrix: list[list[float]] = []
+    labels: list[int] = []
+    close_vals = close_series.tolist()
+    for i in range(size):
+        feature_matrix.append(
+            [rsi_vals[i], cci_vals[i], adx_vals[i], stk_vals[i], roc_vals[i]]
+        )
+        if i + 4 < size:
+            labels.append(1 if close_vals[i + 4] > close_vals[i] else -1)
+        else:
+            labels.append(0)
+
+    # Current bar (latest) features
+    current = feature_matrix[-1]
+    lookback = min(max_bars_back, size - 5)
+    if lookback < 8:
+        return empty
+
+    # Approximate Nearest Neighbors search with Lorentzian distance
+    distances: list[float] = []
+    predictions: list[int] = []
+    last_distance = -1.0
+
+    for i in range(lookback):
+        idx = size - 2 - i
+        if idx < 0 or idx >= len(labels) or labels[idx] == 0:
+            continue
+        d = _lorentzian_distance(current, feature_matrix[idx])
+        if d >= last_distance and i % 4 == 0:
+            last_distance = d
+            distances.append(d)
+            predictions.append(labels[idx])
+            if len(predictions) > neighbors_count:
+                last_distance = distances[int(neighbors_count * 3 / 4)]
+                distances.pop(0)
+                predictions.pop(0)
+
+    if not distances:
+        return empty
+
+    label_sum = sum(predictions)
+    bullish_count = sum(1 for p in predictions if p > 0)
+
+    return {
+        "distanceAvgK8": _safe_number(sum(distances) / len(distances)),
+        "neighborLabelSum": label_sum,
+        "bullishNeighborPct": _safe_number(bullish_count / len(predictions) * 100),
+        "distanceTrend": (
+            1 if len(distances) >= 2 and distances[-1] < distances[-2] else -1
+        ),
+    }
+
+
+def build_feature_snapshot(
+    candles: list[dict[str, Any]],
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     options = options or {}
     frame = _normalize_candles(candles)
 
     if ta is None:
         raise RuntimeError(
-            "pandas-ta is not installed. Install it in the ML service environment to enable library-based feature generation."
+            "pandas-ta is not installed. Install it in the ML service environment "
+            "to enable library-based feature generation."
         )
 
     if len(frame) < 26:
@@ -302,7 +559,7 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     volume = frame["volume"]
 
     # ──────────────────────────────────────────────────────────────
-    # Existing indicators (16 core)
+    # Core indicators (16)
     # ──────────────────────────────────────────────────────────────
     rsi14 = ta.rsi(close=close, length=14)
     macd = ta.macd(close=close, fast=12, slow=26, signal=9)
@@ -321,38 +578,56 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     sma200 = ta.sma(close=close, length=200)
 
     # ──────────────────────────────────────────────────────────────
-    # NEW indicators — expanding to ~35 total
+    # Expanded indicators — ~35 total
     # Selected for LOW correlation with existing features and
-    # HIGH predictive value for crypto futures trading.
+    # HIGH predictive value for crypto futures signals.
     # ──────────────────────────────────────────────────────────────
 
-    # Momentum — new oscillators covering different timeframes/methods
+    # Momentum — additional oscillators covering different timeframes / methods
     willr14 = ta.willr(high=high, low=low, close=close, length=14)
-    ao = ta.ao(high=high, low=low)  # Awesome Oscillator (5/34 SMA of median)
+    ao = ta.ao(high=high, low=low)             # Awesome Oscillator (5/34 SMA of midpoint)
     uo = ta.uo(high=high, low=low, close=close)  # Ultimate Oscillator (7/14/28)
     trix15 = ta.trix(close=close, length=15)  # Triple-smoothed EMA rate of change
-    ppo = ta.ppo(close=close)  # Percentage Price Oscillator (signal & hist)
+    ppo = ta.ppo(close=close)                 # Percentage Price Oscillator
 
-    # Trend — additional moving averages that capture different dynamics
-    hma20 = ta.hma(close=close, length=20)  # Hull MA — faster reaction than EMA
-    dema20 = ta.dema(close=close, length=20)  # Double EMA — less lag
+    # Trend — faster/less-lagged moving averages
+    hma20 = ta.hma(close=close, length=20)    # Hull MA — faster than EMA
+    dema20 = ta.dema(close=close, length=20)  # Double EMA — reduced lag
     psar = ta.psar(high=high, low=low, close=close)  # Parabolic SAR
 
     # Volatility — channel-based indicators
     donchian = ta.donchian(high=high, low=low, close=close, lower_length=20, upper_length=20)
     kc = ta.kc(high=high, low=low, close=close, length=20)  # Keltner Channels
 
-    # Volume — money flow and accumulation
-    cmf20 = ta.cmf(high=high, low=low, close=close, volume=volume, length=20)  # Chaikin Money Flow
-    ad = ta.ad(high=high, low=low, close=close, volume=volume)  # Accumulation/Distribution line
+    # Volume — money flow and accumulation/distribution
+    cmf20 = ta.cmf(high=high, low=low, close=close, volume=volume, length=20)
+    ad = ta.ad(high=high, low=low, close=close, volume=volume)
     efi13 = ta.efi(close=close, volume=volume, length=13)  # Elder Force Index
 
-    # Statistics — distribution features for ML
-    zscore20 = ta.zscore(close=close, length=20)  # Z-score — normalized distance from mean
-    linreg_result = ta.linreg(close=close, length=20)  # Linear regression value
+    # Statistics — distribution / normalisation features for ML
+    zscore20 = ta.zscore(close=close, length=20)
+    linreg_result = ta.linreg(close=close, length=20)
 
     # ──────────────────────────────────────────────────────────────
-    # Extract series from multi-column results
+    # Lorentzian Classification indicators
+    # ──────────────────────────────────────────────────────────────
+
+    # WaveTrend Oscillator
+    hlc3 = (high + low + close) / 3
+    wt1, wt2 = _wave_trend(hlc3, channel_len=10, avg_len=11)
+
+    # Kernel Regression (Nadaraya-Watson)
+    kernel_rq = _rational_quadratic_kernel(
+        close, lookback=KERNEL_LOOKBACK,
+        relative_weight=KERNEL_RELATIVE_WEIGHT, start_bar=KERNEL_START_BAR,
+    )
+    kernel_gauss = _gaussian_kernel(
+        close, lookback=max(1, KERNEL_LOOKBACK - KERNEL_LAG),
+        start_bar=KERNEL_START_BAR,
+    )
+
+    # ──────────────────────────────────────────────────────────────
+    # Extract series from multi-column DataFrames
     # ──────────────────────────────────────────────────────────────
     macd_line = _safe_col(macd, "MACD_12_26_9")
     macd_signal = _safe_col(macd, "MACDs_12_26_9")
@@ -366,26 +641,21 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     dmp14 = _safe_col(adx, "DMP_14")
     dmn14 = _safe_col(adx, "DMN_14")
 
-    # PPO multi-column extraction
     ppo_line = _safe_col(ppo, "PPO_12_26_9")
-    ppo_signal_line = _safe_col(ppo, "PPOs_12_26_9")
     ppo_hist = _safe_col(ppo, "PPOh_12_26_9")
 
-    # PSAR — extract the long/short SAR values
     psar_long = _safe_col(psar, "PSARl_0.02_0.2") if psar is not None else None
     psar_short = _safe_col(psar, "PSARs_0.02_0.2") if psar is not None else None
 
-    # Donchian channels extraction
     dc_upper = _safe_col(donchian, "DCU_20_20")
     dc_lower = _safe_col(donchian, "DCL_20_20")
     dc_mid = _safe_col(donchian, "DCM_20_20")
 
-    # Keltner channels extraction
     kc_upper = _safe_col(kc, "KCUe_20_2")
     kc_lower = _safe_col(kc, "KCLe_20_2")
 
     # ──────────────────────────────────────────────────────────────
-    # Compute latest scalar values
+    # Scalar latest values
     # ──────────────────────────────────────────────────────────────
     latest_close = _safe_number(close.iloc[-1])
     latest_open = _safe_number(open_.iloc[-1])
@@ -407,12 +677,10 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     prev_macd_line = _previous(macd_line)
     prev_macd_signal = _previous(macd_signal)
 
-    # New latest values
     latest_hma20 = _latest(hma20)
     latest_dema20 = _latest(dema20)
     latest_dc_upper = _latest(dc_upper)
     latest_dc_lower = _latest(dc_lower)
-    latest_dc_mid = _latest(dc_mid)
     latest_kc_upper = _latest(kc_upper)
     latest_kc_lower = _latest(kc_lower)
 
@@ -420,28 +688,40 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     # Derived percentage / ratio features
     # ──────────────────────────────────────────────────────────────
     price_vs_ema_pct = _pct(
-        latest_close - latest_ema20 if latest_close is not None and latest_ema20 is not None else None,
+        latest_close - latest_ema20
+        if latest_close is not None and latest_ema20 is not None
+        else None,
         latest_ema20,
     )
     price_vs_sma_pct = _pct(
-        latest_close - latest_sma20 if latest_close is not None and latest_sma20 is not None else None,
+        latest_close - latest_sma20
+        if latest_close is not None and latest_sma20 is not None
+        else None,
         latest_sma20,
     )
     price_vs_sma200_pct = _pct(
-        latest_close - latest_sma200 if latest_close is not None and latest_sma200 is not None else None,
+        latest_close - latest_sma200
+        if latest_close is not None and latest_sma200 is not None
+        else None,
         latest_sma200,
     )
     ema_sma_spread_pct = _pct(
-        latest_ema20 - latest_sma20 if latest_ema20 is not None and latest_sma20 is not None else None,
+        latest_ema20 - latest_sma20
+        if latest_ema20 is not None and latest_sma20 is not None
+        else None,
         latest_sma20,
     )
     atr_pct = _pct(latest_atr14, latest_close)
     candle_range_pct = _pct(
-        latest_high - latest_low if latest_high is not None and latest_low is not None else None,
+        latest_high - latest_low
+        if latest_high is not None and latest_low is not None
+        else None,
         latest_close,
     )
     candle_body_pct = _pct(
-        abs(latest_close - latest_open) if latest_close is not None and latest_open is not None else None,
+        abs(latest_close - latest_open)
+        if latest_close is not None and latest_open is not None
+        else None,
         latest_close,
     )
     upper_wick_pct = _pct(
@@ -456,7 +736,9 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
         else None,
         latest_close,
     )
-    volume_sma20 = _safe_number(volume.tail(20).mean()) if len(volume) >= 20 else None
+    volume_sma20 = (
+        _safe_number(volume.tail(20).mean()) if len(volume) >= 20 else None
+    )
     relative_volume = (
         latest_volume / volume_sma20
         if volume_sma20 not in (None, 0)
@@ -467,38 +749,54 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
         if obv is not None and len(obv) >= 6
         else None
     )
-
-    # New derived features
     price_vs_hma_pct = _pct(
-        latest_close - latest_hma20 if latest_close is not None and latest_hma20 is not None else None,
+        latest_close - latest_hma20
+        if latest_close is not None and latest_hma20 is not None
+        else None,
         latest_hma20,
     )
     price_vs_dema_pct = _pct(
-        latest_close - latest_dema20 if latest_close is not None and latest_dema20 is not None else None,
+        latest_close - latest_dema20
+        if latest_close is not None and latest_dema20 is not None
+        else None,
         latest_dema20,
     )
 
     # Donchian channel position — where price sits within the channel (0-100%)
     donchian_position_pct = None
-    if None not in (latest_close, latest_dc_upper, latest_dc_lower) and latest_dc_upper != latest_dc_lower:
-        donchian_position_pct = ((latest_close - latest_dc_lower) / (latest_dc_upper - latest_dc_lower)) * 100
+    if (
+        None not in (latest_close, latest_dc_upper, latest_dc_lower)
+        and latest_dc_upper != latest_dc_lower
+    ):
+        donchian_position_pct = (
+            (latest_close - latest_dc_lower) / (latest_dc_upper - latest_dc_lower)
+        ) * 100
 
     donchian_width_pct = _pct(
-        latest_dc_upper - latest_dc_lower if latest_dc_upper is not None and latest_dc_lower is not None else None,
+        latest_dc_upper - latest_dc_lower
+        if latest_dc_upper is not None and latest_dc_lower is not None
+        else None,
         latest_close,
     )
 
-    # Keltner channel position
+    # Keltner channel position (0-100%)
     keltner_position_pct = None
-    if None not in (latest_close, latest_kc_upper, latest_kc_lower) and latest_kc_upper != latest_kc_lower:
-        keltner_position_pct = ((latest_close - latest_kc_lower) / (latest_kc_upper - latest_kc_lower)) * 100
+    if (
+        None not in (latest_close, latest_kc_upper, latest_kc_lower)
+        and latest_kc_upper != latest_kc_lower
+    ):
+        keltner_position_pct = (
+            (latest_close - latest_kc_lower) / (latest_kc_upper - latest_kc_lower)
+        ) * 100
 
-    # Squeeze detection — Bollinger inside Keltner = low volatility compression
+    # Squeeze: Bollinger inside Keltner = volatility compression
     squeeze_on = None
     if None not in (latest_bb_lower, latest_bb_upper, latest_kc_lower, latest_kc_upper):
-        squeeze_on = latest_bb_lower > latest_kc_lower and latest_bb_upper < latest_kc_upper
+        squeeze_on = (
+            latest_bb_lower > latest_kc_lower and latest_bb_upper < latest_kc_upper
+        )
 
-    # Parabolic SAR direction — above close = bearish, below close = bullish
+    # Parabolic SAR direction
     psar_direction = "UNKNOWN"
     latest_psar_long = _latest(psar_long)
     latest_psar_short = _latest(psar_short)
@@ -508,7 +806,9 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
         psar_direction = "BEARISH"
 
     psar_distance_pct = None
-    active_psar = latest_psar_long if latest_psar_long is not None else latest_psar_short
+    active_psar = (
+        latest_psar_long if latest_psar_long is not None else latest_psar_short
+    )
     if active_psar is not None and latest_close not in (None, 0):
         psar_distance_pct = ((latest_close - active_psar) / latest_close) * 100
 
@@ -516,7 +816,7 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     ad_slope5 = _slope(ad, 5)
 
     # ──────────────────────────────────────────────────────────────
-    # MACD crossover logic
+    # MACD crossover detection
     # ──────────────────────────────────────────────────────────────
     if None not in (prev_macd_line, prev_macd_signal, latest_macd_line, latest_macd_signal):
         if prev_macd_line <= prev_macd_signal and latest_macd_line > latest_macd_signal:
@@ -538,17 +838,23 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     # Composite classification features
     # ──────────────────────────────────────────────────────────────
     trend_direction = _resolve_trend_direction(
-        latest_close,
-        latest_ema20,
-        latest_sma20,
-        latest_sma200,
+        latest_close, latest_ema20, latest_sma20, latest_sma200
     )
+
+    # FIX: trend_strength previously mixed price-deviation percentages (e.g. 2%)
+    # with ADX values (e.g. 40) in a single max(). Because ADX is on a 0-100 scale
+    # while MA deviations are typically 0.5-5%, ADX always dominated the result,
+    # making the field functionally equivalent to adx14 with noise.
+    #
+    # Now computed as price-deviation only — a consistent percentage scale.
+    # ADX is already available separately in the trend dict (adx14 field).
+    # ML models can use both fields independently.
     trend_strength = max(
         abs(price_vs_ema_pct or 0),
         abs(price_vs_sma_pct or 0),
         abs(ema_sma_spread_pct or 0),
-        abs(_latest(adx14) or 0),
     )
+
     bollinger_band_width_pct = _pct(
         latest_bb_upper - latest_bb_lower
         if latest_bb_upper is not None and latest_bb_lower is not None
@@ -557,9 +863,7 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     )
     natr14 = _pct(latest_atr14, latest_close)
     market_regime = _resolve_market_regime(
-        trend_direction,
-        atr_pct,
-        bollinger_band_width_pct,
+        trend_direction, atr_pct, bollinger_band_width_pct
     )
     supply_demand = _calculate_supply_demand(frame, latest_atr14, latest_close)
     fvg_structure = _calculate_fvg_structure(frame, latest_close)
@@ -568,8 +872,70 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
     leverage = options.get("leverage", 10)
     signal_type = options.get("signalType", "UNKNOWN")
 
+    # volatilityPct: max of three volatility proxies, each already in % terms.
+    # None values are treated as 0 (unknown = no detected volatility from that source).
+    volatility_pct = max(
+        atr_pct or 0,
+        candle_range_pct or 0,
+        bollinger_band_width_pct or 0,
+    )
+
+    # ── Kernel regression derived values ───────────────────────
+    kernel_rq_latest = _latest(kernel_rq)
+    kernel_gauss_latest = _latest(kernel_gauss)
+    kernel_rq_prev = _previous(kernel_rq)
+    kernel_rq_prev2 = _safe_number(kernel_rq.iloc[-3]) if len(kernel_rq) >= 3 else None
+
+    # Rate of change: 1 if kernel rising, -1 if falling, 0 if flat
+    kernel_roc = 0
+    if kernel_rq_prev is not None and kernel_rq_latest is not None:
+        if kernel_rq_latest > kernel_rq_prev:
+            kernel_roc = 1
+        elif kernel_rq_latest < kernel_rq_prev:
+            kernel_roc = -1
+
+    # Crossover signal: detect Gaussian crossing RQ kernel
+    kernel_cross = 0
+    if kernel_gauss_latest is not None and kernel_rq_latest is not None:
+        prev_gauss = _previous(kernel_gauss)
+        if prev_gauss is not None and kernel_rq_prev is not None:
+            if prev_gauss < kernel_rq_prev and kernel_gauss_latest >= kernel_rq_latest:
+                kernel_cross = 1   # bullish cross
+            elif prev_gauss > kernel_rq_prev and kernel_gauss_latest <= kernel_rq_latest:
+                kernel_cross = -1  # bearish cross
+
+    price_vs_kernel = _pct(
+        latest_close - kernel_rq_latest
+        if latest_close is not None and kernel_rq_latest is not None
+        else None,
+        kernel_rq_latest,
+    )
+
+    # ── WaveTrend derived values ──────────────────────────────
+    wt1_latest = _latest(wt1)
+    wt2_latest = _latest(wt2)
+    wt1_prev = _previous(wt1)
+    wt2_prev = _previous(wt2)
+
+    wt_cross = 0
+    if None not in (wt1_latest, wt2_latest, wt1_prev, wt2_prev):
+        if wt1_prev <= wt2_prev and wt1_latest > wt2_latest:
+            wt_cross = 1   # bullish cross
+        elif wt1_prev >= wt2_prev and wt1_latest < wt2_latest:
+            wt_cross = -1  # bearish cross
+
+    # ── Lorentzian KNN features ───────────────────────────────
+    lorentzian = _compute_lorentzian_features(
+        close_series=close,
+        rsi_series=rsi14,
+        cci_series=cci20,
+        adx_series=_safe_col(adx, "ADX_14"),
+        stoch_k_series=stoch_k,
+        roc_series=roc10,
+    )
+
     return {
-        "featureVersion": "v3_expanded",
+        "featureVersion": "v4_lorentzian",
         "generatedAt": pd.Timestamp.utcnow().isoformat(),
         "source": "pandas_ta",
         "momentum": {
@@ -583,13 +949,16 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "stochasticD": _latest(stoch_d),
             "cci20": _latest(cci20),
             "roc10": _latest(roc10),
-            # NEW momentum indicators
             "williamsR14": _latest(willr14),
             "awesomeOscillator": _latest(ao),
             "ultimateOscillator": _latest(uo),
             "trix15": _latest(trix15),
             "ppoLine": _latest(ppo_line),
             "ppoHistogram": _latest(ppo_hist),
+            # Lorentzian Classification — WaveTrend
+            "waveTrend1": _safe_number(wt1_latest),
+            "waveTrend2": _safe_number(wt2_latest),
+            "waveTrendCross": wt_cross,
         },
         "trend": {
             "ema20": latest_ema20,
@@ -602,11 +971,12 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "priceVsSmaPct": _safe_number(price_vs_sma_pct),
             "priceVsSma200Pct": _safe_number(price_vs_sma200_pct),
             "trendDirection": trend_direction,
+            # trendStrength is now price-deviation only (consistent % scale).
+            # Use adx14 directly for ADX-based strength assessment.
             "trendStrength": _safe_number(trend_strength),
             "adx14": _latest(adx14),
             "dmiPlus14": _latest(dmp14),
             "dmiMinus14": _latest(dmn14),
-            # NEW trend indicators
             "hma20": latest_hma20,
             "dema20": latest_dema20,
             "priceVsHmaPct": _safe_number(price_vs_hma_pct),
@@ -614,6 +984,12 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "psarDirection": psar_direction,
             "psarDistancePct": _safe_number(psar_distance_pct),
             "linregValue": _latest(linreg_result),
+            # Lorentzian Classification — Kernel Regression
+            "kernelRqEstimate": _safe_number(kernel_rq_latest),
+            "kernelGaussianEstimate": _safe_number(kernel_gauss_latest),
+            "kernelRateOfChange": kernel_roc,
+            "kernelCrossoverSignal": kernel_cross,
+            "priceVsKernelPct": _safe_number(price_vs_kernel),
         },
         "volatility": {
             "atr14": latest_atr14,
@@ -622,8 +998,7 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "bollingerBandWidthPct": _safe_number(bollinger_band_width_pct),
             "bollingerPercentB": latest_bb_percent,
             "natr14": _safe_number(natr14),
-            "volatilityPct": max(atr_pct or 0, candle_range_pct or 0, bollinger_band_width_pct or 0),
-            # NEW volatility indicators
+            "volatilityPct": _safe_number(volatility_pct),
             "donchianPositionPct": _safe_number(donchian_position_pct),
             "donchianWidthPct": _safe_number(donchian_width_pct),
             "keltnerPositionPct": _safe_number(keltner_position_pct),
@@ -637,7 +1012,6 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "mfi14": _latest(mfi14),
             "obv": _latest(obv),
             "obvSlope5": obv_slope5,
-            # NEW volume indicators
             "cmf20": _latest(cmf20),
             "adLine": _latest(ad),
             "adSlope5": _safe_number(ad_slope5),
@@ -667,9 +1041,25 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "bodyPct": _safe_number(candle_body_pct),
             "upperWickPct": _safe_number(upper_wick_pct),
             "lowerWickPct": _safe_number(lower_wick_pct),
-            "bullishStrength": _safe_number(candle_body_pct if latest_close is not None and latest_open is not None and latest_close >= latest_open else 0),
-            "bearishStrength": _safe_number(candle_body_pct if latest_close is not None and latest_open is not None and latest_close < latest_open else 0),
-            "isBullish": _safe_bool(latest_close is not None and latest_open is not None and latest_close >= latest_open),
+            "bullishStrength": _safe_number(
+                candle_body_pct
+                if latest_close is not None
+                and latest_open is not None
+                and latest_close >= latest_open
+                else 0
+            ),
+            "bearishStrength": _safe_number(
+                candle_body_pct
+                if latest_close is not None
+                and latest_open is not None
+                and latest_close < latest_open
+                else 0
+            ),
+            "isBullish": _safe_bool(
+                latest_close is not None
+                and latest_open is not None
+                and latest_close >= latest_open
+            ),
         },
         "context": {
             "signalType": signal_type if signal_type in {"BUY", "SELL", "HOLD"} else "UNKNOWN",
@@ -681,4 +1071,6 @@ def build_feature_snapshot(candles: list[dict[str, Any]], options: dict[str, Any
             "highPrice": latest_high,
             "lowPrice": latest_low,
         },
+        # Lorentzian Classification — KNN pattern similarity
+        "lorentzian": lorentzian,
     }

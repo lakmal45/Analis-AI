@@ -19,6 +19,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBClassifier
 
 from feature_schema import FEATURE_COLUMNS
+from lorentzian_model import build_lorentzian_knn
 
 
 def load_training_frame(dataset_path: str | Path) -> pd.DataFrame:
@@ -365,6 +366,23 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
     test_calibrated = apply_calibrator(test_raw, calibrator)
     holdout_metrics = compute_binary_metrics(y_test, test_calibrated)
     walk_forward_metrics = build_walk_forward_metrics(x_frame, y_frame)
+
+    # ── Lorentzian KNN ensemble member ──────────────────────────────
+    # Train a KNN classifier with Lorentzian distance alongside XGBoost.
+    # Wrapped in try/except so KNN failure never blocks XGBoost training.
+    knn_model = None
+    knn_holdout_metrics: dict[str, Any] = {}
+    ensemble_weights = {"xgboost": 1.0}
+    try:
+        knn = build_lorentzian_knn(n_neighbors=8)
+        knn.fit(x_train, y_train)
+        knn_test_probs = knn.predict_proba(x_test)[:, 1]
+        knn_holdout_metrics = compute_binary_metrics(y_test, knn_test_probs)
+        knn_model = knn
+        ensemble_weights = {"xgboost": 0.65, "lorentzian_knn": 0.35}
+    except Exception as knn_err:
+        print(f"[WARN] Lorentzian KNN training failed (XGBoost unaffected): {knn_err}")
+
     promotion = evaluate_promotion_eligibility(
         {
             **holdout_metrics,
@@ -381,22 +399,26 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "datasetRows": int(len(frame)),
         "calibrationMethod": "platt_logistic_regression",
         "walkForward": walk_forward_metrics,
+        "lorentzianKnn": knn_holdout_metrics if knn_model else None,
     }
 
     metadata = {
         "trainedAt": datetime.now(timezone.utc).isoformat(),
         "featureColumns": list(x_frame.columns),
-        "featureVersion": "v1",
-        "modelVersion": f"xgb_v1_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        "featureVersion": "v4_lorentzian",
+        "modelVersion": f"xgb_knn_v4_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
         "datasetPath": str(Path(dataset_path)),
         "notes": notes,
         "metrics": metrics,
         "promotion": promotion,
+        "ensembleWeights": ensemble_weights,
     }
 
     bundle = {
         "model": model,
         "imputer": imputer,
         "calibrator": calibrator,
+        "lorentzian_knn": knn_model,
+        "ensemble_weights": ensemble_weights,
     }
     return bundle, metadata

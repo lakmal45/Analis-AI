@@ -282,6 +282,9 @@ const SignalSchema = new mongoose.Schema({
     priceChangePct: { type: Number, default: null },
     marketPriceChangePct: { type: Number, default: null },
     leveragedReturnPct: { type: Number, default: null },
+    feesPerTradePct: { type: Number, default: null },
+    feeImpactPct: { type: Number, default: null },
+    netLeveragedReturnPct: { type: Number, default: null },
   },
   reasoning: {
     type: String,

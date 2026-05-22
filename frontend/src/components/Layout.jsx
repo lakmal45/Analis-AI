@@ -105,6 +105,16 @@ const Layout = () => {
       ),
     },
     {
+      path: "/app/backtesting",
+      label: "Backtesting",
+      icon: (
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 19h16M6 16l3.5-3.5 2.5 2.5 5-6 1.5 1.5" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 9h3v3" />
+        </svg>
+      ),
+    },
+    {
       path: "/app/chat",
       label: "AI Chat",
       icon: (

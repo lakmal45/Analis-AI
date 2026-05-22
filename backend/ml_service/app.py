@@ -144,7 +144,28 @@ def predict(request: PredictRequest) -> dict[str, Any]:
     feature_columns = metadata.get("featureColumns") or FEATURE_COLUMNS
     feature_frame = _prepare_feature_frame(request.features, feature_columns)
     transformed = bundle["imputer"].transform(feature_frame)
-    raw_probability = float(bundle["model"].predict_proba(transformed)[0][1])
+
+    # XGBoost prediction (primary model — always available)
+    xgb_probability = float(bundle["model"].predict_proba(transformed)[0][1])
+
+    # Lorentzian KNN ensemble member (optional — backward-compatible)
+    knn_probability = None
+    ensemble_weights = bundle.get("ensemble_weights", {"xgboost": 1.0})
+    knn_model = bundle.get("lorentzian_knn")
+    if knn_model is not None:
+        try:
+            knn_probability = float(knn_model.predict_proba(transformed)[0][1])
+            raw_probability = (
+                xgb_probability * ensemble_weights.get("xgboost", 0.65)
+                + knn_probability * ensemble_weights.get("lorentzian_knn", 0.35)
+            )
+        except Exception:
+            # KNN prediction failed — fall back to XGBoost only
+            raw_probability = xgb_probability
+    else:
+        raw_probability = xgb_probability
+
+    # Platt scaling calibration (applied to the ensembled probability)
     calibrator = bundle.get("calibrator")
     if calibrator is not None:
         probability = float(
@@ -160,4 +181,10 @@ def predict(request: PredictRequest) -> dict[str, Any]:
         "featureVersion": metadata.get("featureVersion"),
         "metrics": metadata.get("metrics", {}),
         "promotion": metadata.get("promotion", {}),
+        "ensemble": {
+            "xgboostProbability": xgb_probability,
+            "knnProbability": knn_probability,
+            "weights": ensemble_weights,
+        },
     }
+

@@ -295,6 +295,16 @@ export const buildMlFeatureSnapshot = (klineData, options = {}) => {
       stochasticD,
       cci20,
       roc10,
+      // Lorentzian Classification — unavailable in JS fallback
+      williamsR14: null,
+      awesomeOscillator: null,
+      ultimateOscillator: null,
+      trix15: null,
+      ppoLine: null,
+      ppoHistogram: null,
+      waveTrend1: null,
+      waveTrend2: null,
+      waveTrendCross: null,
     },
     trend: {
       ema20,
@@ -311,6 +321,19 @@ export const buildMlFeatureSnapshot = (klineData, options = {}) => {
       adx14: null,
       dmiPlus14: null,
       dmiMinus14: null,
+      // Lorentzian Classification — unavailable in JS fallback
+      hma20: null,
+      dema20: null,
+      priceVsHmaPct: null,
+      priceVsDemaPct: null,
+      psarDirection: null,
+      psarDistancePct: null,
+      linregValue: null,
+      kernelRqEstimate: null,
+      kernelGaussianEstimate: null,
+      kernelRateOfChange: null,
+      kernelCrossoverSignal: null,
+      priceVsKernelPct: null,
     },
     volatility: {
       atr14,
@@ -320,6 +343,12 @@ export const buildMlFeatureSnapshot = (klineData, options = {}) => {
       bollingerPercentB,
       natr14: atrPct,
       volatilityPct: Math.max(atrPct ?? 0, candleRangePct ?? 0, bollingerBandWidthPct ?? 0),
+      // Lorentzian Classification — unavailable in JS fallback
+      donchianPositionPct: null,
+      donchianWidthPct: null,
+      keltnerPositionPct: null,
+      squeezeOn: null,
+      zscore20: null,
     },
     volume: {
       volume: latestVolume,
@@ -328,6 +357,11 @@ export const buildMlFeatureSnapshot = (klineData, options = {}) => {
       mfi14,
       obv,
       obvSlope5,
+      // Lorentzian Classification — unavailable in JS fallback
+      cmf20: null,
+      adLine: null,
+      adSlope5: null,
+      efi13: null,
     },
     structure: {
       activeZoneBias: supplyDemand?.bias || "NONE",
@@ -366,6 +400,13 @@ export const buildMlFeatureSnapshot = (klineData, options = {}) => {
       openPrice: latestOpen,
       highPrice: latestHigh,
       lowPrice: latestLow,
+    },
+    // Lorentzian Classification — unavailable in JS fallback
+    lorentzian: {
+      distanceAvgK8: null,
+      neighborLabelSum: null,
+      bullishNeighborPct: null,
+      distanceTrend: null,
     },
   };
 };

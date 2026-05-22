@@ -15,13 +15,20 @@ import {
   calculateATRValue,
 } from "./mlFeatureService.js";
 import { predictSignalWinProbability } from "./mlInferenceService.js";
-import { getPrice } from "./marketService.js";
+import { getKlines } from "./marketService.js";
 
 let signalResolutionInterval = null;
 let isResolvingSignals = false;
 export const DEFAULT_FUTURES_LEVERAGE = 10;
-const DEFAULT_FEATURE_VERSION = "v1";
-const RULE_CONFIDENCE_WEIGHT = Number(process.env.ML_RULE_CONFIDENCE_WEIGHT || 0.35);
+
+// FIX: Updated to match what feature_builder.py actually outputs ("v3_expanded").
+// The old "v1" fallback caused version mismatches in DB records when the Python
+// service was unavailable.
+const DEFAULT_FEATURE_VERSION = "v3_expanded";
+
+const RULE_CONFIDENCE_WEIGHT = Number(
+  process.env.ML_RULE_CONFIDENCE_WEIGHT || 0.35,
+);
 const ML_PROBABILITY_WEIGHT = Number(process.env.ML_PROBABILITY_WEIGHT || 0.65);
 const MIN_DIRECTIONAL_RULE_CONFIDENCE = Number(
   process.env.MIN_DIRECTIONAL_RULE_CONFIDENCE || 68,
@@ -31,9 +38,42 @@ const MIN_DIRECTIONAL_SCORE_GAP = Number(
 );
 const MIN_ML_PROBABILITY = Number(process.env.MIN_ML_PROBABILITY || 0.6);
 const MIN_MODEL_ROC_AUC = Number(process.env.MIN_MODEL_ROC_AUC || 0.58);
-const MIN_MODEL_DATASET_ROWS = Number(process.env.MIN_MODEL_DATASET_ROWS || 400);
+const MIN_MODEL_DATASET_ROWS = Number(
+  process.env.MIN_MODEL_DATASET_ROWS || 400,
+);
 const REQUIRE_HEALTHY_ML_FOR_DIRECTIONAL_SIGNALS =
   process.env.REQUIRE_HEALTHY_ML_FOR_DIRECTIONAL_SIGNALS !== "false";
+
+// FIX: Corrected comment. The threshold ratio is 35%, not 20% as previously documented.
+const SIGNAL_THRESHOLD_RATIO = 0.35;
+const DEFAULT_INTRABAR_POLICY = "conservative";
+const DEFAULT_FEES_PER_TRADE_PCT = Number(
+  process.env.DEFAULT_FEES_PER_TRADE_PCT || 0.04,
+);
+
+const DEFAULT_RESOLUTION_CANDLES_BY_TIMEFRAME = {
+  "1m": 10,
+  "5m": 8,
+  "15m": 6,
+  "1h": 5,
+  "4h": 3,
+  "1d": 3,
+};
+
+const timeframeToMs = (timeframe) => {
+  const timeframeMap = {
+    "1m": 60 * 1000,
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+  };
+  return timeframeMap[timeframe] || timeframeMap["1h"];
+};
+
+const getDefaultResolutionCandles = (timeframe) =>
+  DEFAULT_RESOLUTION_CANDLES_BY_TIMEFRAME[timeframe] || 5;
 
 const getExpectedDirection = (signalType) => {
   if (signalType === "BUY") return "UP";
@@ -47,7 +87,11 @@ const getActualDirection = (entryPrice, resolutionPrice) => {
   return "NEUTRAL";
 };
 
-const getOutcomeFromDirections = (expectedDirection, actualDirection, status) => {
+const getOutcomeFromDirections = (
+  expectedDirection,
+  actualDirection,
+  status,
+) => {
   if (status === "CANCELLED") {
     return "CANCELLED";
   }
@@ -59,16 +103,261 @@ const getOutcomeFromDirections = (expectedDirection, actualDirection, status) =>
   return expectedDirection === actualDirection ? "WIN" : "LOSS";
 };
 
+const getExitReasonOutcome = (
+  exitReason,
+  expectedDirection,
+  actualDirection,
+) => {
+  if (
+    exitReason?.startsWith("take_profit") ||
+    exitReason === "signal_target_hit"
+  ) {
+    return "WIN";
+  }
+
+  if (
+    exitReason?.startsWith("stop_loss") ||
+    exitReason === "signal_stop_loss_hit"
+  ) {
+    return "LOSS";
+  }
+
+  return getOutcomeFromDirections(
+    expectedDirection,
+    actualDirection,
+    "COMPLETED",
+  );
+};
+
+const getSignalPriceTargets = (signal) => {
+  const targetPrice = Number(signal?.price?.target);
+  const stopLossPrice = Number(signal?.price?.stopLoss);
+
+  return {
+    targetPrice: Number.isFinite(targetPrice) ? targetPrice : null,
+    stopLossPrice: Number.isFinite(stopLossPrice) ? stopLossPrice : null,
+  };
+};
+
+const resolveGapExit = (signalType, candle, targetPrice, stopLossPrice) => {
+  const openPrice = Number(candle.open);
+  if (!Number.isFinite(openPrice)) return null;
+
+  if (signalType === "BUY") {
+    if (Number.isFinite(stopLossPrice) && openPrice <= stopLossPrice) {
+      return {
+        exitReason: "stop_loss_gap",
+        resolutionPrice: openPrice,
+        resolutionMode: "gap_open",
+      };
+    }
+    if (Number.isFinite(targetPrice) && openPrice >= targetPrice) {
+      return {
+        exitReason: "take_profit_gap",
+        resolutionPrice: openPrice,
+        resolutionMode: "gap_open",
+      };
+    }
+  }
+
+  if (signalType === "SELL") {
+    if (Number.isFinite(stopLossPrice) && openPrice >= stopLossPrice) {
+      return {
+        exitReason: "stop_loss_gap",
+        resolutionPrice: openPrice,
+        resolutionMode: "gap_open",
+      };
+    }
+    if (Number.isFinite(targetPrice) && openPrice <= targetPrice) {
+      return {
+        exitReason: "take_profit_gap",
+        resolutionPrice: openPrice,
+        resolutionMode: "gap_open",
+      };
+    }
+  }
+
+  return null;
+};
+
+const resolveIntrabarExit = (
+  signalType,
+  candle,
+  targetPrice,
+  stopLossPrice,
+  intrabarPolicy = DEFAULT_INTRABAR_POLICY,
+) => {
+  const high = Number(candle.high);
+  const low = Number(candle.low);
+  if (!Number.isFinite(high) || !Number.isFinite(low)) return null;
+
+  let targetHit = false;
+  let stopHit = false;
+
+  if (signalType === "BUY") {
+    targetHit = Number.isFinite(targetPrice) && high >= targetPrice;
+    stopHit = Number.isFinite(stopLossPrice) && low <= stopLossPrice;
+  } else if (signalType === "SELL") {
+    targetHit = Number.isFinite(targetPrice) && low <= targetPrice;
+    stopHit = Number.isFinite(stopLossPrice) && high >= stopLossPrice;
+  }
+
+  if (!targetHit && !stopHit) return null;
+
+  if (targetHit && stopHit) {
+    const takeProfitFirst = intrabarPolicy === "optimistic";
+    return {
+      exitReason: takeProfitFirst
+        ? "take_profit_intrabar"
+        : "stop_loss_intrabar",
+      resolutionPrice: takeProfitFirst ? targetPrice : stopLossPrice,
+      resolutionMode: "intrabar_dual_hit",
+      targetHit: true,
+      stopHit: true,
+    };
+  }
+
+  if (targetHit) {
+    return {
+      exitReason: "take_profit_intrabar",
+      resolutionPrice: targetPrice,
+      resolutionMode: "intrabar",
+      targetHit: true,
+      stopHit: false,
+    };
+  }
+
+  return {
+    exitReason: "stop_loss_intrabar",
+    resolutionPrice: stopLossPrice,
+    resolutionMode: "intrabar",
+    targetHit: false,
+    stopHit: true,
+  };
+};
+
+const simulateSignalResolution = (
+  signal,
+  futureCandles,
+  intrabarPolicy = DEFAULT_INTRABAR_POLICY,
+) => {
+  const { targetPrice, stopLossPrice } = getSignalPriceTargets(signal);
+
+  for (let offset = 0; offset < futureCandles.length; offset += 1) {
+    const candle = futureCandles[offset];
+
+    const gapResolution = resolveGapExit(
+      signal.type,
+      candle,
+      targetPrice,
+      stopLossPrice,
+    );
+    if (gapResolution) {
+      return {
+        ...gapResolution,
+        resolvedAt: new Date(candle.openTime).toISOString(),
+        holdingCandles: offset + 1,
+      };
+    }
+
+    const intrabarResolution = resolveIntrabarExit(
+      signal.type,
+      candle,
+      targetPrice,
+      stopLossPrice,
+      intrabarPolicy,
+    );
+    if (intrabarResolution) {
+      return {
+        ...intrabarResolution,
+        resolvedAt: new Date(candle.closeTime).toISOString(),
+        holdingCandles: offset + 1,
+      };
+    }
+  }
+
+  const expiryCandle = futureCandles[futureCandles.length - 1];
+  if (!expiryCandle) return null;
+
+  return {
+    exitReason: "time_expiry",
+    resolutionPrice: Number(expiryCandle.close),
+    resolutionMode: "time_expiry",
+    resolvedAt: new Date(expiryCandle.closeTime).toISOString(),
+    holdingCandles: futureCandles.length,
+    targetHit: false,
+    stopHit: false,
+  };
+};
+
+const buildAutoResolutionFromCandles = async (signal, now = new Date()) => {
+  const createdAtMs = new Date(signal.createdAt).getTime();
+  if (!Number.isFinite(createdAtMs)) {
+    return null;
+  }
+
+  const expiresAtMs = signal.expiresAt
+    ? new Date(signal.expiresAt).getTime()
+    : createdAtMs +
+      timeframeToMs(signal.timeframe) *
+        getDefaultResolutionCandles(signal.timeframe);
+  const resolutionCandles = getDefaultResolutionCandles(signal.timeframe);
+  const endTime = Math.min(
+    Number.isFinite(expiresAtMs) ? expiresAtMs : now.getTime(),
+    now.getTime(),
+  );
+
+  const klineData = await getKlines(signal.symbol, signal.timeframe, {
+    limit: resolutionCandles + 2,
+    startTime: createdAtMs + 1,
+    endTime,
+  });
+
+  const closedFutureCandles = (klineData || [])
+    .filter((candle) => Number(candle.closeTime) <= now.getTime())
+    .slice(0, resolutionCandles);
+
+  if (closedFutureCandles.length === 0) {
+    return null;
+  }
+
+  const simulatedResolution = simulateSignalResolution(
+    signal,
+    closedFutureCandles,
+    DEFAULT_INTRABAR_POLICY,
+  );
+
+  if (!simulatedResolution) {
+    return null;
+  }
+
+  const isExpired = Number.isFinite(expiresAtMs) && now.getTime() >= expiresAtMs;
+  const shouldResolveImmediately =
+    simulatedResolution.exitReason?.startsWith("take_profit") ||
+    simulatedResolution.exitReason?.startsWith("stop_loss");
+
+  if (!shouldResolveImmediately && !isExpired) {
+    return null;
+  }
+
+  return simulatedResolution;
+};
+
 const normalizeLeverage = (value, fallback = DEFAULT_FUTURES_LEVERAGE) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return fallback;
   }
-
   return Math.min(Math.max(parsed, 1), 125);
 };
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+const toBoundedNumber = (value, fallback, min, max) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+};
 
 const calculateFinalConfidence = (ruleConfidence, probability) => {
   if (!Number.isFinite(probability)) {
@@ -92,19 +381,24 @@ const buildAccuracyGuardrailDecision = (signalData, prediction) => {
     return {
       shouldAbstain: false,
       reasons: [],
-      ruleConfidence: toFiniteNumber(
-        signalData?.ml?.ruleConfidence ?? signalData?.confidence ?? 0,
-      ) ?? 0,
+      ruleConfidence:
+        toFiniteNumber(
+          signalData?.ml?.ruleConfidence ?? signalData?.confidence ?? 0,
+        ) ?? 0,
     };
   }
 
   const reasons = [];
   const ruleConfidence =
-    toFiniteNumber(signalData.ml?.ruleConfidence ?? signalData.confidence ?? 0) ?? 0;
+    toFiniteNumber(
+      signalData.ml?.ruleConfidence ?? signalData.confidence ?? 0,
+    ) ?? 0;
   const buyScore = toFiniteNumber(signalData.scoring?.buyScore);
   const sellScore = toFiniteNumber(signalData.scoring?.sellScore);
   const scoreGap =
-    buyScore !== null && sellScore !== null ? Math.abs(buyScore - sellScore) : null;
+    buyScore !== null && sellScore !== null
+      ? Math.abs(buyScore - sellScore)
+      : null;
 
   if (ruleConfidence < MIN_DIRECTIONAL_RULE_CONFIDENCE) {
     reasons.push(
@@ -153,11 +447,7 @@ const buildAccuracyGuardrailDecision = (signalData, prediction) => {
     }
   }
 
-  return {
-    shouldAbstain: reasons.length > 0,
-    reasons,
-    ruleConfidence,
-  };
+  return { shouldAbstain: reasons.length > 0, reasons, ruleConfidence };
 };
 
 const convertDirectionalSignalToHold = (
@@ -166,27 +456,26 @@ const convertDirectionalSignalToHold = (
   ruleConfidence,
   reasons,
 ) => {
-  const fallbackConfidence = clamp(Math.round(Math.min(ruleConfidence, 55)), 0, 100);
+  const fallbackConfidence = clamp(
+    Math.round(Math.min(ruleConfidence, 55)),
+    0,
+    100,
+  );
 
   return {
     ...signalData,
     type: "HOLD",
     confidence: fallbackConfidence,
     expectedDirection: "NEUTRAL",
-    reasoning: `${signalData.reasoning} Accuracy guardrail forced HOLD: ${reasons.join(
-      "; ",
-    )}.`,
-    price: {
-      ...signalData.price,
-      target: null,
-      stopLoss: null,
-    },
+    reasoning: `${signalData.reasoning} Accuracy guardrail forced HOLD: ${reasons.join("; ")}.`,
+    price: { ...signalData.price, target: null, stopLoss: null },
     ml: {
       ...signalData.ml,
       status: prediction.available ? "READY" : "UNAVAILABLE",
       probability: prediction.available ? prediction.probability : null,
       finalConfidence: fallbackConfidence,
-      modelVersion: prediction.modelVersion || signalData.ml?.modelVersion || null,
+      modelVersion:
+        prediction.modelVersion || signalData.ml?.modelVersion || null,
       featureVersion:
         prediction.featureVersion ||
         signalData.ml?.featureVersion ||
@@ -196,6 +485,13 @@ const convertDirectionalSignalToHold = (
   };
 };
 
+/**
+ * Calculate futures P&L for a given signal.
+ *
+ * FIX: Added liquidation floor. At high leverage a sufficiently large adverse
+ * move wipes margin (loss > 100%). The leveragedReturnPct is now capped at
+ * -100% to reflect the real worst-case outcome on a margin account.
+ */
 export const calculateFuturesPerformance = (
   signalType,
   entryPrice,
@@ -214,7 +510,11 @@ export const calculateFuturesPerformance = (
     directionalReturnPct = (marketPriceChangePct ?? 0) * -1;
   }
 
-  const leveragedReturnPct = directionalReturnPct * safeLeverage;
+  // Cap at -100%: you can't lose more than your entire margin
+  const leveragedReturnPct = Math.max(
+    directionalReturnPct * safeLeverage,
+    -100,
+  );
 
   return {
     leverage: safeLeverage,
@@ -223,24 +523,6 @@ export const calculateFuturesPerformance = (
     directionalReturnPct,
     leveragedReturnPct,
   };
-};
-
-const timeframeToMs = (timeframe) => {
-  const timeframeMap = {
-    "1m": 60 * 1000,
-    "5m": 5 * 60 * 1000,
-    "15m": 15 * 60 * 1000,
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 60 * 60 * 1000,
-    "1d": 24 * 60 * 60 * 1000,
-  };
-
-  return timeframeMap[timeframe] || timeframeMap["1h"];
-};
-
-const isSignalDueForResolution = (signal, now = Date.now()) => {
-  const createdAt = new Date(signal.createdAt).getTime();
-  return createdAt + timeframeToMs(signal.timeframe) <= now;
 };
 
 const applyResolutionToSignal = async (signal, resolutionData) => {
@@ -273,27 +555,51 @@ const applyResolutionToSignal = async (signal, resolutionData) => {
     resolutionPrice,
     signal.leverage,
   );
+  const feesPerTradePct = toBoundedNumber(
+    resolutionData.feesPerTradePct,
+    DEFAULT_FEES_PER_TRADE_PCT,
+    0,
+    1,
+  );
+  const feeImpactPct = feesPerTradePct * normalizeLeverage(signal.leverage);
+  const netLeveragedReturnPct = Math.max(
+    performance.leveragedReturnPct - feeImpactPct,
+    -100,
+  );
 
   signal.status = "COMPLETED";
   signal.expiresAt = null;
   signal.price.current = resolutionPrice;
   signal.price.resolution = resolutionPrice;
   signal.actualDirection = actualDirection;
-  signal.outcome = getOutcomeFromDirections(
-    signal.expectedDirection,
-    actualDirection,
-    "COMPLETED",
-  );
+  signal.outcome = resolutionData.exitReason
+    ? getExitReasonOutcome(
+        resolutionData.exitReason,
+        signal.expectedDirection,
+        actualDirection,
+      )
+    : getOutcomeFromDirections(
+        signal.expectedDirection,
+        actualDirection,
+        "COMPLETED",
+      );
   signal.resolvedAt = resolutionData.resolvedAt
     ? new Date(resolutionData.resolvedAt)
     : new Date();
-  signal.resolutionSource = resolutionData.resolutionSource || null;
+  signal.resolutionSource =
+    resolutionData.resolutionSource || resolutionData.exitReason || null;
   signal.resolutionNotes = resolutionData.resolutionNotes || null;
+
+  // FIX: priceChangePct was incorrectly set to leveragedReturnPct (same as the
+  // field below it). Now correctly uses directionalReturnPct (raw unleveraged %).
   signal.performance = {
     priceChange: performance.priceChange,
-    priceChangePct: performance.leveragedReturnPct,
+    priceChangePct: performance.directionalReturnPct,
     marketPriceChangePct: performance.marketPriceChangePct,
     leveragedReturnPct: performance.leveragedReturnPct,
+    feesPerTradePct,
+    feeImpactPct,
+    netLeveragedReturnPct,
   };
 
   await signal.save();
@@ -301,11 +607,44 @@ const applyResolutionToSignal = async (signal, resolutionData) => {
 };
 
 /**
- * Generate trading signal based on technical indicators
- * @param {string} symbol - Trading pair symbol (e.g., 'BTCUSDT')
- * @param {Array} klineData - Candlestick data
- * @param {Object} options - Additional options
- * @returns {Object|null} - Generated signal or null
+ * Compute regime-aware weights for each rule category.
+ *
+ * Mean-reversion rules (RSI, Stochastic, Bollinger %B, Z-score, etc.) generate
+ * noise in trending markets and should be down-weighted there.
+ * Trend-following rules (MACD crossover, ADX+DMI, PSAR, ROC) generate noise
+ * in ranging markets and should be down-weighted there.
+ * Universal rules (volume, market structure) apply in all regimes.
+ *
+ * @param {"TRENDING"|"TRENDING_VOLATILE"|"RANGING"|"RANGING_VOLATILE"|"UNKNOWN"} regime
+ * @returns {{ mr: number, tf: number }}
+ */
+/*const computeRegimeWeights = (regime) => {
+  const isTrending = regime === "TRENDING" || regime === "TRENDING_VOLATILE";
+  const isRanging = regime === "RANGING" || regime === "RANGING_VOLATILE";
+
+  return {
+    mr: isTrending ? 0.4 : 1.0, // mean-reversion weight
+    tf: isRanging ? 0.4 : 1.0, // trend-following weight
+  };
+};*/
+const computeRegimeWeights = (regime, enabled = true) => {
+  if (!enabled) {
+    // Regime-gated weights are disabled when backtesting without ML.
+    // Without ML as a backstop, the regime filter creates more errors than it prevents.
+    return { mr: 1.0, tf: 1.0 };
+  }
+
+  const isTrending = regime === "TRENDING" || regime === "TRENDING_VOLATILE";
+  const isRanging = regime === "RANGING" || regime === "RANGING_VOLATILE";
+
+  return {
+    mr: isTrending ? 0.4 : 1.0, // mean-reversion weight
+    tf: isRanging ? 0.4 : 1.0, // trend-following weight
+  };
+};
+
+/**
+ * Generate the rule-based signal context from kline data and the ML feature snapshot.
  */
 const getRuleSignalContext = (
   symbol,
@@ -326,6 +665,15 @@ const getRuleSignalContext = (
   const snapshotVolatility = featureSnapshot?.volatility;
   const snapshotVolume = featureSnapshot?.volume;
   const snapshotStructure = featureSnapshot?.structure;
+  const snapshotLorentzian = featureSnapshot?.lorentzian;
+  const regimeWeightingEnabled = options.enableRegimeWeights !== false;
+
+  // Market regime from feature snapshot — used for regime-gated scoring
+  const marketRegime = featureSnapshot?.context?.marketRegime ?? "UNKNOWN";
+  const { mr: mrW, tf: tfW } = computeRegimeWeights(
+    marketRegime,
+    regimeWeightingEnabled,
+  );
 
   // --- Primary indicators (with hardcoded fallback) ---
   let latestRSI = snapshotMomentum?.rsi14 ?? null;
@@ -360,14 +708,19 @@ const getRuleSignalContext = (
   const squeezeOn = snapshotVolatility?.squeezeOn ?? null;
   const zscore20 = snapshotVolatility?.zscore20 ?? null;
   const activeZoneBias = snapshotStructure?.activeZoneBias ?? "NONE";
-  const nearestSupplyDistancePct = snapshotStructure?.nearestSupplyDistancePct ?? null;
-  const nearestDemandDistancePct = snapshotStructure?.nearestDemandDistancePct ?? null;
+  const nearestSupplyDistancePct =
+    snapshotStructure?.nearestSupplyDistancePct ?? null;
+  const nearestDemandDistancePct =
+    snapshotStructure?.nearestDemandDistancePct ?? null;
   const nearestFvgBias = snapshotStructure?.nearestFvgBias ?? "NONE";
-  const bullishFvgDistancePct = snapshotStructure?.bullishFvgDistancePct ?? null;
-  const bearishFvgDistancePct = snapshotStructure?.bearishFvgDistancePct ?? null;
+  const bullishFvgDistancePct =
+    snapshotStructure?.bullishFvgDistancePct ?? null;
+  const bearishFvgDistancePct =
+    snapshotStructure?.bearishFvgDistancePct ?? null;
   const bullishFvgSizePct = snapshotStructure?.bullishFvgSizePct ?? null;
   const bearishFvgSizePct = snapshotStructure?.bearishFvgSizePct ?? null;
 
+  // Fallback: compute primary indicators from raw klines when snapshot is missing
   if (
     ![
       latestRSI,
@@ -384,8 +737,10 @@ const getRuleSignalContext = (
     const sma20 = calculateSMA(klineData, 20);
 
     const latestMACD = macdResult.macdLine[macdResult.macdLine.length - 1];
-    const latestSignal = macdResult.signalLine[macdResult.signalLine.length - 1];
-    const latestHistogram = macdResult.histogram[macdResult.histogram.length - 1];
+    const latestSignal =
+      macdResult.signalLine[macdResult.signalLine.length - 1];
+    const latestHistogram =
+      macdResult.histogram[macdResult.histogram.length - 1];
     const prevMACD = macdResult.macdLine[macdResult.macdLine.length - 2];
     const prevSignal = macdResult.signalLine[macdResult.signalLine.length - 2];
 
@@ -416,11 +771,14 @@ const getRuleSignalContext = (
 
   // ──────────────────────────────────────────────────────────────
   // Multi-indicator scoring system
-  // Each indicator contributes weighted points to buy/sell scores.
-  // Signal is generated when dominant score reaches the threshold.
-  // Threshold is dynamic — scales with the number of available indicators.
+  //
+  // Rules are split into three regime categories:
+  //   • Mean-reversion (mrW): down-weighted in trending markets
+  //   • Trend-following (tfW): down-weighted in ranging markets
+  //   • Universal: always full weight (volume, structure)
+  //
+  // Threshold: 35% of available max score, minimum 2.5 points.
   // ──────────────────────────────────────────────────────────────
-  const SIGNAL_THRESHOLD_RATIO = 0.35;
   let availableMaxScore = 0;
   let buyScore = 0;
   let sellScore = 0;
@@ -430,74 +788,251 @@ const getRuleSignalContext = (
   const fmtNum = (v, decimals = 1) =>
     Number.isFinite(v) ? v.toFixed(decimals) : "N/A";
 
-  // 1. RSI (weight: 2 strong, 1 moderate)
+  // ── MEAN-REVERSION RULES ────────────────────────────────────────
+
+  // 1. RSI — oversold/overbought (mean-reversion, weight: 2 strong / 1 moderate)
   if (Number.isFinite(latestRSI)) {
-    availableMaxScore += 2;
+    availableMaxScore += 2 * mrW;
     if (latestRSI < 30) {
-      buyScore += 2;
+      buyScore += 2 * mrW;
       buyReasons.push(`RSI oversold (${fmtNum(latestRSI)})`);
     } else if (latestRSI < 40) {
-      buyScore += 1;
+      buyScore += 1 * mrW;
       buyReasons.push(`RSI low (${fmtNum(latestRSI)})`);
     } else if (latestRSI > 70) {
-      sellScore += 2;
+      sellScore += 2 * mrW;
       sellReasons.push(`RSI overbought (${fmtNum(latestRSI)})`);
     } else if (latestRSI > 60) {
-      sellScore += 1;
+      sellScore += 1 * mrW;
       sellReasons.push(`RSI elevated (${fmtNum(latestRSI)})`);
     }
   }
 
-  // 2. MACD crossover (weight: 2)
-  if (Number.isFinite(latestMacdLine) && Number.isFinite(latestSignalLine)) {
-    availableMaxScore += 2;
-  }
-  if (bullishCrossover) {
-    buyScore += 2;
-    buyReasons.push("MACD bullish crossover");
-  }
-  if (bearishCrossover) {
-    sellScore += 2;
-    sellReasons.push("MACD bearish crossover");
-  }
-
-  // 3. MACD histogram direction (weight: 1)
-  if (Number.isFinite(latestHistogramValue)) {
-    availableMaxScore += 1;
-    if (latestHistogramValue > 0) {
-      buyScore += 1;
-      buyReasons.push("MACD histogram positive");
-    } else if (latestHistogramValue < 0) {
-      sellScore += 1;
-      sellReasons.push("MACD histogram negative");
-    }
-  }
-
-  // 4. Stochastic %K — oversold/overbought confirmation (weight: 1)
+  // 2. Stochastic %K — oversold/overbought confirmation (mean-reversion, weight: 1)
   if (Number.isFinite(stochasticK)) {
-    availableMaxScore += 1;
+    availableMaxScore += 1 * mrW;
     if (stochasticK < 20) {
-      buyScore += 1;
+      buyScore += 1 * mrW;
       buyReasons.push(`Stochastic oversold (%K=${fmtNum(stochasticK)})`);
     } else if (stochasticK > 80) {
-      sellScore += 1;
+      sellScore += 1 * mrW;
       sellReasons.push(`Stochastic overbought (%K=${fmtNum(stochasticK)})`);
     }
   }
 
-  // 5. CCI — extreme momentum confirmation (weight: 1)
+  // 3. CCI — extreme momentum confirmation (mean-reversion, weight: 1)
   if (Number.isFinite(cci20)) {
-    availableMaxScore += 1;
+    availableMaxScore += 1 * mrW;
     if (cci20 < -100) {
-      buyScore += 1;
+      buyScore += 1 * mrW;
       buyReasons.push(`CCI oversold (${fmtNum(cci20)})`);
     } else if (cci20 > 100) {
-      sellScore += 1;
+      sellScore += 1 * mrW;
       sellReasons.push(`CCI overbought (${fmtNum(cci20)})`);
     }
   }
 
-  // 6. MFI — Money Flow Index (weight: 1.5 extreme, 0.5 moderate)
+  // 4. Bollinger %B — price relative to bands (mean-reversion, weight: 1)
+  if (Number.isFinite(bollingerPercentB)) {
+    availableMaxScore += 1 * mrW;
+    if (bollingerPercentB < 0.2) {
+      buyScore += 1 * mrW;
+      buyReasons.push(
+        `Near Bollinger lower band (%B=${fmtNum(bollingerPercentB, 2)})`,
+      );
+    } else if (bollingerPercentB > 0.8) {
+      sellScore += 1 * mrW;
+      sellReasons.push(
+        `Near Bollinger upper band (%B=${fmtNum(bollingerPercentB, 2)})`,
+      );
+    }
+  }
+
+  // 5. Williams %R — similar to RSI, inverted scale (mean-reversion, weight: 1)
+  if (Number.isFinite(williamsR14)) {
+    availableMaxScore += 1 * mrW;
+    if (williamsR14 < -80) {
+      buyScore += 1 * mrW;
+      buyReasons.push(`Williams %R oversold (${fmtNum(williamsR14)})`);
+    } else if (williamsR14 > -20) {
+      sellScore += 1 * mrW;
+      sellReasons.push(`Williams %R overbought (${fmtNum(williamsR14)})`);
+    }
+  }
+
+  // 6. Ultimate Oscillator — multi-timeframe mean-reversion (weight: 1)
+  if (Number.isFinite(ultimateOscillator)) {
+    availableMaxScore += 1 * mrW;
+    if (ultimateOscillator < 30) {
+      buyScore += 1 * mrW;
+      buyReasons.push(
+        `Ultimate Oscillator oversold (${fmtNum(ultimateOscillator)})`,
+      );
+    } else if (ultimateOscillator > 70) {
+      sellScore += 1 * mrW;
+      sellReasons.push(
+        `Ultimate Oscillator overbought (${fmtNum(ultimateOscillator)})`,
+      );
+    }
+  }
+
+  // 7. Z-score — statistical extreme detection (mean-reversion, weight: 0.5)
+  if (Number.isFinite(zscore20)) {
+    availableMaxScore += 0.5 * mrW;
+    if (zscore20 < -2) {
+      buyScore += 0.5 * mrW;
+      buyReasons.push(
+        `Z-score extreme low (${fmtNum(zscore20, 2)}) — mean reversion likely`,
+      );
+    } else if (zscore20 > 2) {
+      sellScore += 0.5 * mrW;
+      sellReasons.push(
+        `Z-score extreme high (${fmtNum(zscore20, 2)}) — mean reversion likely`,
+      );
+    }
+  }
+
+  // 8. Price vs EMA20 relationship (mean-reversion, weight: 0.5)
+  //    Note: classifies below EMA20 as reversal zone. Down-weighted in trends
+  //    because price is expected to stay above EMA20 in a bullish trend.
+  if (Number.isFinite(latestEMA20) && Number.isFinite(currentPrice)) {
+    availableMaxScore += 0.5 * mrW;
+    if (currentPrice < latestEMA20) {
+      buyScore += 0.5 * mrW;
+      buyReasons.push("Price below EMA20 (reversal zone)");
+    } else if (currentPrice > latestEMA20) {
+      sellScore += 0.5 * mrW;
+      sellReasons.push("Price above EMA20 (reversal zone)");
+    }
+  }
+
+  // 22. WaveTrend Oscillator — cyclical turning point detection (mean-reversion, weight: 1.5)
+  //     Lorentzian Classification integration: WaveTrend excels at detecting
+  //     cyclical reversals that RSI misses due to its different smoothing method.
+  const wt1 = snapshotMomentum?.waveTrend1 ?? null;
+  const wt2 = snapshotMomentum?.waveTrend2 ?? null;
+  if (Number.isFinite(wt1) && Number.isFinite(wt2)) {
+    const wtWeight = 1.5 * mrW;
+    availableMaxScore += wtWeight;
+    if (wt1 < -60 && wt1 > wt2) {
+      buyScore += wtWeight;
+      buyReasons.push(
+        `WaveTrend oversold + bullish cross (WT1=${fmtNum(wt1)})`,
+      );
+    } else if (wt1 > 60 && wt1 < wt2) {
+      sellScore += wtWeight;
+      sellReasons.push(
+        `WaveTrend overbought + bearish cross (WT1=${fmtNum(wt1)})`,
+      );
+    } else if (wt1 < -40) {
+      buyScore += wtWeight * 0.5;
+      buyReasons.push(`WaveTrend low zone (WT1=${fmtNum(wt1)})`);
+    } else if (wt1 > 40) {
+      sellScore += wtWeight * 0.5;
+      sellReasons.push(`WaveTrend high zone (WT1=${fmtNum(wt1)})`);
+    }
+  }
+
+  // ── TREND-FOLLOWING RULES ───────────────────────────────────────
+
+  // 9. MACD crossover (trend-following, weight: 2)
+  if (Number.isFinite(latestMacdLine) && Number.isFinite(latestSignalLine)) {
+    availableMaxScore += 2 * tfW;
+  }
+  if (bullishCrossover) {
+    buyScore += 2 * tfW;
+    buyReasons.push("MACD bullish crossover");
+  }
+  if (bearishCrossover) {
+    sellScore += 2 * tfW;
+    sellReasons.push("MACD bearish crossover");
+  }
+
+  // 10. MACD histogram direction (trend-following, weight: 1)
+  if (Number.isFinite(latestHistogramValue)) {
+    availableMaxScore += 1 * tfW;
+    if (latestHistogramValue > 0) {
+      buyScore += 1 * tfW;
+      buyReasons.push("MACD histogram positive");
+    } else if (latestHistogramValue < 0) {
+      sellScore += 1 * tfW;
+      sellReasons.push("MACD histogram negative");
+    }
+  }
+
+  // 11. ADX + DMI — unified adaptive rule (trend-following)
+  //
+  //   FIX: The original had two separate rules (8 and 9) both using dmiPlus14/dmiMinus14,
+  //   creating systematic double-counting (+2 points in trending markets where both fired).
+  //   Now merged into a single rule where ADX strength determines the weight:
+  //     • ADX > 25 (strong trend): weight 2
+  //     • ADX ≤ 25 or unavailable: weight 1
+  //   This preserves the intent without inflating scores.
+  if (Number.isFinite(dmiPlus14) && Number.isFinite(dmiMinus14)) {
+    const hasStrongTrend = Number.isFinite(adx14) && adx14 > 25;
+    const dmiWeight = hasStrongTrend ? 2 : 1;
+    availableMaxScore += dmiWeight * tfW;
+
+    if (dmiPlus14 > dmiMinus14) {
+      buyScore += dmiWeight * tfW;
+      buyReasons.push(
+        hasStrongTrend
+          ? `ADX strong trend + DMI bullish (ADX=${fmtNum(adx14)})`
+          : "DMI+ > DMI- (bullish directional movement)",
+      );
+    } else if (dmiMinus14 > dmiPlus14) {
+      sellScore += dmiWeight * tfW;
+      sellReasons.push(
+        hasStrongTrend
+          ? `ADX strong trend + DMI bearish (ADX=${fmtNum(adx14)})`
+          : "DMI- > DMI+ (bearish directional movement)",
+      );
+    }
+  }
+
+  // 12. ROC — Rate of Change momentum extremes (trend-following, weight: 1)
+  if (Number.isFinite(roc10)) {
+    availableMaxScore += 1 * tfW;
+    if (roc10 < -5) {
+      buyScore += 1 * tfW;
+      buyReasons.push(
+        `ROC deeply negative (${fmtNum(roc10)}%) — reversal potential`,
+      );
+    } else if (roc10 > 5) {
+      sellScore += 1 * tfW;
+      sellReasons.push(
+        `ROC strongly positive (${fmtNum(roc10)}%) — reversal potential`,
+      );
+    }
+  }
+
+  // 13. Parabolic SAR — trend direction confirmation (trend-following, weight: 1)
+  if (psarDirection === "BULLISH" || psarDirection === "BEARISH") {
+    availableMaxScore += 1 * tfW;
+    if (psarDirection === "BULLISH") {
+      buyScore += 1 * tfW;
+      buyReasons.push("PSAR below price (bullish trend)");
+    } else {
+      sellScore += 1 * tfW;
+      sellReasons.push("PSAR above price (bearish trend)");
+    }
+  }
+
+  // 14. Awesome Oscillator — momentum confirmation (trend-following, weight: 0.5)
+  if (Number.isFinite(awesomeOscillator)) {
+    availableMaxScore += 0.5 * tfW;
+    if (awesomeOscillator > 0) {
+      buyScore += 0.5 * tfW;
+      buyReasons.push("Awesome Oscillator positive (bullish momentum)");
+    } else if (awesomeOscillator < 0) {
+      sellScore += 0.5 * tfW;
+      sellReasons.push("Awesome Oscillator negative (bearish momentum)");
+    }
+  }
+
+  // ── UNIVERSAL RULES (volume + structure) ────────────────────────
+
+  // 15. MFI — Money Flow Index (universal, weight: 1.5 extreme / 0.5 moderate)
   if (Number.isFinite(mfi14)) {
     availableMaxScore += 1.5;
     if (mfi14 < 20) {
@@ -515,58 +1050,7 @@ const getRuleSignalContext = (
     }
   }
 
-  // 7. Bollinger %B — price relative to bands (weight: 1)
-  if (Number.isFinite(bollingerPercentB)) {
-    availableMaxScore += 1;
-    if (bollingerPercentB < 0.2) {
-      buyScore += 1;
-      buyReasons.push(`Near Bollinger lower band (%B=${fmtNum(bollingerPercentB, 2)})`);
-    } else if (bollingerPercentB > 0.8) {
-      sellScore += 1;
-      sellReasons.push(`Near Bollinger upper band (%B=${fmtNum(bollingerPercentB, 2)})`);
-    }
-  }
-
-  // 8. ADX + DMI — trend strength and direction (weight: 1)
-  //    Uses DMI direction instead of running score to avoid circular dependency.
-  if (Number.isFinite(adx14) && Number.isFinite(dmiPlus14) && Number.isFinite(dmiMinus14)) {
-    availableMaxScore += 1;
-    if (adx14 > 25) {
-      if (dmiPlus14 > dmiMinus14) {
-        buyScore += 1;
-        buyReasons.push(`ADX strong trend + DMI bullish (ADX=${fmtNum(adx14)})`);
-      } else if (dmiMinus14 > dmiPlus14) {
-        sellScore += 1;
-        sellReasons.push(`ADX strong trend + DMI bearish (ADX=${fmtNum(adx14)})`);
-      }
-    }
-  }
-
-  // 9. DMI — Directional Movement standalone (weight: 1)
-  if (Number.isFinite(dmiPlus14) && Number.isFinite(dmiMinus14)) {
-    availableMaxScore += 1;
-    if (dmiPlus14 > dmiMinus14) {
-      buyScore += 1;
-      buyReasons.push("DMI+ > DMI- (bullish directional movement)");
-    } else if (dmiMinus14 > dmiPlus14) {
-      sellScore += 1;
-      sellReasons.push("DMI- > DMI+ (bearish directional movement)");
-    }
-  }
-
-  // 10. ROC — Rate of Change momentum extremes (weight: 1)
-  if (Number.isFinite(roc10)) {
-    availableMaxScore += 1;
-    if (roc10 < -5) {
-      buyScore += 1;
-      buyReasons.push(`ROC deeply negative (${fmtNum(roc10)}%) — reversal potential`);
-    } else if (roc10 > 5) {
-      sellScore += 1;
-      sellReasons.push(`ROC strongly positive (${fmtNum(roc10)}%) — reversal potential`);
-    }
-  }
-
-  // 11. OBV slope — volume trend (weight: 0.5)
+  // 16. OBV slope — volume trend (universal, weight: 0.5)
   if (Number.isFinite(obvSlope5)) {
     availableMaxScore += 0.5;
     if (obvSlope5 > 0) {
@@ -578,61 +1062,24 @@ const getRuleSignalContext = (
     }
   }
 
-  // 12. Relative Volume — activity confirmation (weight: 0.5)
-  //     Uses candle direction instead of running score to avoid circular dependency.
+  // 17. Relative Volume — activity confirmation (universal, weight: 0.5)
   if (Number.isFinite(relativeVolume) && relativeVolume > 1.5) {
     availableMaxScore += 0.5;
     const isBullishCandle = currentPrice >= currentOpen;
     if (isBullishCandle) {
       buyScore += 0.5;
-      buyReasons.push(`High volume on bullish candle (${fmtNum(relativeVolume, 2)}x avg)`);
+      buyReasons.push(
+        `High volume on bullish candle (${fmtNum(relativeVolume, 2)}x avg)`,
+      );
     } else {
       sellScore += 0.5;
-      sellReasons.push(`High volume on bearish candle (${fmtNum(relativeVolume, 2)}x avg)`);
+      sellReasons.push(
+        `High volume on bearish candle (${fmtNum(relativeVolume, 2)}x avg)`,
+      );
     }
   }
 
-  // 13. Price vs EMA20 relationship (weight: 0.5)
-  if (Number.isFinite(latestEMA20) && Number.isFinite(currentPrice)) {
-    availableMaxScore += 0.5;
-    if (currentPrice < latestEMA20) {
-      buyScore += 0.5;
-      buyReasons.push("Price below EMA20 (reversal zone)");
-    } else if (currentPrice > latestEMA20) {
-      sellScore += 0.5;
-      sellReasons.push("Price above EMA20 (reversal zone)");
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────
-  // v3 expanded scoring rules — new indicators
-  // ──────────────────────────────────────────────────────────────
-
-  // 14. Williams %R — similar to RSI but inverted scale (weight: 1)
-  if (Number.isFinite(williamsR14)) {
-    availableMaxScore += 1;
-    if (williamsR14 < -80) {
-      buyScore += 1;
-      buyReasons.push(`Williams %R oversold (${fmtNum(williamsR14)})`);
-    } else if (williamsR14 > -20) {
-      sellScore += 1;
-      sellReasons.push(`Williams %R overbought (${fmtNum(williamsR14)})`);
-    }
-  }
-
-  // 15. Parabolic SAR — trend direction confirmation (weight: 1)
-  if (psarDirection === "BULLISH" || psarDirection === "BEARISH") {
-    availableMaxScore += 1;
-    if (psarDirection === "BULLISH") {
-      buyScore += 1;
-      buyReasons.push("PSAR below price (bullish trend)");
-    } else {
-      sellScore += 1;
-      sellReasons.push("PSAR above price (bearish trend)");
-    }
-  }
-
-  // 16. Chaikin Money Flow — institutional accumulation/distribution (weight: 1)
+  // 18. Chaikin Money Flow — institutional accumulation/distribution (universal, weight: 1)
   if (Number.isFinite(cmf20)) {
     availableMaxScore += 1;
     if (cmf20 > 0.1) {
@@ -644,58 +1091,24 @@ const getRuleSignalContext = (
     }
   }
 
-  // 17. Squeeze detection — Bollinger inside Keltner = compression (weight: 0.5)
-  //     Compression preceded by directional breakout amplifies signals.
+  // 19. Squeeze detection — Bollinger inside Keltner = compression (universal, weight: 0.5)
   if (squeezeOn === true) {
     availableMaxScore += 0.5;
-    // During squeeze, any existing directional bias gets amplified
     const isBullishCandle = currentPrice >= currentOpen;
     if (isBullishCandle) {
       buyScore += 0.5;
-      buyReasons.push("Volatility squeeze + bullish pressure (breakout potential)");
+      buyReasons.push(
+        "Volatility squeeze + bullish pressure (breakout potential)",
+      );
     } else {
       sellScore += 0.5;
-      sellReasons.push("Volatility squeeze + bearish pressure (breakout potential)");
+      sellReasons.push(
+        "Volatility squeeze + bearish pressure (breakout potential)",
+      );
     }
   }
 
-  // 18. Awesome Oscillator — momentum confirmation (weight: 0.5)
-  if (Number.isFinite(awesomeOscillator)) {
-    availableMaxScore += 0.5;
-    if (awesomeOscillator > 0) {
-      buyScore += 0.5;
-      buyReasons.push("Awesome Oscillator positive (bullish momentum)");
-    } else if (awesomeOscillator < 0) {
-      sellScore += 0.5;
-      sellReasons.push("Awesome Oscillator negative (bearish momentum)");
-    }
-  }
-
-  // 19. Ultimate Oscillator — multi-timeframe momentum (weight: 1)
-  if (Number.isFinite(ultimateOscillator)) {
-    availableMaxScore += 1;
-    if (ultimateOscillator < 30) {
-      buyScore += 1;
-      buyReasons.push(`Ultimate Oscillator oversold (${fmtNum(ultimateOscillator)})`);
-    } else if (ultimateOscillator > 70) {
-      sellScore += 1;
-      sellReasons.push(`Ultimate Oscillator overbought (${fmtNum(ultimateOscillator)})`);
-    }
-  }
-
-  // 20. Z-score — statistical extreme detection (weight: 0.5)
-  if (Number.isFinite(zscore20)) {
-    availableMaxScore += 0.5;
-    if (zscore20 < -2) {
-      buyScore += 0.5;
-      buyReasons.push(`Z-score extreme low (${fmtNum(zscore20, 2)}) — mean reversion likely`);
-    } else if (zscore20 > 2) {
-      sellScore += 0.5;
-      sellReasons.push(`Z-score extreme high (${fmtNum(zscore20, 2)}) — mean reversion likely`);
-    }
-  }
-
-  // 21. Supply/Demand zones — stronger market structure cue (weight: 2)
+  // 20. Supply/Demand zones — stronger market structure cue (universal, weight: 2)
   if (activeZoneBias === "DEMAND" || activeZoneBias === "SUPPLY") {
     availableMaxScore += 2;
     if (activeZoneBias === "DEMAND") {
@@ -721,7 +1134,7 @@ const getRuleSignalContext = (
     }
   }
 
-  // 22. Fair Value Gap — imbalance / magnet zone (weight: 1.5)
+  // 21. Fair Value Gap — imbalance / magnet zone (universal, weight: 1.5)
   if (nearestFvgBias === "BULLISH" || nearestFvgBias === "BEARISH") {
     availableMaxScore += 1.5;
     if (nearestFvgBias === "BULLISH") {
@@ -743,11 +1156,44 @@ const getRuleSignalContext = (
     }
   }
 
+  // 23. Lorentzian Neighbor Consensus — historical pattern matching (universal, weight: 1.5)
+  //     Uses Approximate Nearest Neighbors with Lorentzian distance to find
+  //     historically similar market patterns and vote on direction.
+  //     This is the ONLY rule based on pattern similarity rather than oscillator math.
+  const bullishNeighborPct = snapshotLorentzian?.bullishNeighborPct ?? null;
+  const distanceAvgK8 = snapshotLorentzian?.distanceAvgK8 ?? null;
+  if (Number.isFinite(bullishNeighborPct)) {
+    availableMaxScore += 1.5;
+    // High confidence: neighbor consensus is strong AND distance is low (close match)
+    const highConfidence =
+      Number.isFinite(distanceAvgK8) && distanceAvgK8 < 5;
+    if (bullishNeighborPct >= 70) {
+      const weight = highConfidence ? 1.5 : 0.75;
+      buyScore += weight;
+      buyReasons.push(
+        `Lorentzian: ${fmtNum(bullishNeighborPct)}% of similar patterns were bullish${
+          highConfidence ? " (high-confidence match)" : ""
+        }`,
+      );
+    } else if (bullishNeighborPct <= 30) {
+      const weight = highConfidence ? 1.5 : 0.75;
+      sellScore += weight;
+      sellReasons.push(
+        `Lorentzian: ${fmtNum(100 - bullishNeighborPct)}% of similar patterns were bearish${
+          highConfidence ? " (high-confidence match)" : ""
+        }`,
+      );
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────
   // Signal decision based on multi-indicator consensus
-  // Dynamic threshold: 20% of available max score, minimum 2.5
+  // Threshold: 35% of available max score, minimum 2.5 points.
   // ──────────────────────────────────────────────────────────────
-  const dynamicThreshold = Math.max(2.5, availableMaxScore * SIGNAL_THRESHOLD_RATIO);
+  const dynamicThreshold = Math.max(
+    2.5,
+    availableMaxScore * SIGNAL_THRESHOLD_RATIO,
+  );
   let signalType = "HOLD";
   let ruleConfidence = 50;
   let reasoning = "";
@@ -760,6 +1206,7 @@ const getRuleSignalContext = (
     );
     reasoning = `BUY signal confirmed by ${buyReasons.length} indicator(s): ${buyReasons.join("; ")}. `;
     reasoning += `Buy score: ${buyScore.toFixed(1)} vs Sell score: ${sellScore.toFixed(1)} (threshold: ${dynamicThreshold.toFixed(1)}). `;
+    reasoning += `Market regime: ${marketRegime}. `;
     if (sellReasons.length > 0) {
       reasoning += `Caution — opposing signals: ${sellReasons.join("; ")}.`;
     }
@@ -771,6 +1218,7 @@ const getRuleSignalContext = (
     );
     reasoning = `SELL signal confirmed by ${sellReasons.length} indicator(s): ${sellReasons.join("; ")}. `;
     reasoning += `Sell score: ${sellScore.toFixed(1)} vs Buy score: ${buyScore.toFixed(1)} (threshold: ${dynamicThreshold.toFixed(1)}). `;
+    reasoning += `Market regime: ${marketRegime}. `;
     if (buyReasons.length > 0) {
       reasoning += `Caution — opposing signals: ${buyReasons.join("; ")}.`;
     }
@@ -779,26 +1227,37 @@ const getRuleSignalContext = (
     ruleConfidence = 50;
     reasoning = `HOLD signal: No multi-indicator consensus reached. `;
     reasoning += `Buy score: ${buyScore.toFixed(1)}, Sell score: ${sellScore.toFixed(1)} (threshold: ${dynamicThreshold.toFixed(1)}). `;
-    if (buyReasons.length > 0) {
+    reasoning += `Market regime: ${marketRegime}. `;
+    if (buyReasons.length > 0)
       reasoning += `Bullish hints: ${buyReasons.join("; ")}. `;
-    }
-    if (sellReasons.length > 0) {
+    if (sellReasons.length > 0)
       reasoning += `Bearish hints: ${sellReasons.join("; ")}. `;
-    }
     reasoning += `Wait for clearer multi-indicator agreement.`;
   }
 
-  // Calculate price targets — ATR multipliers are configurable
-  const resolvedAtr = Number.isFinite(atr) ? atr : calculateATRValue(klineData, 14) ?? 0;
-  const tpMultiplier = options.atrTargetMultiplier ?? 2;
+  // Calculate price targets using ATR multipliers
+  const resolvedAtr = Number.isFinite(atr)
+    ? atr
+    : (calculateATRValue(klineData, 14) ?? 0);
+  const tpMultiplier = options.atrTargetMultiplier ?? 3;
   const slMultiplier = options.atrStopMultiplier ?? 1.5;
   const targetMultiplier =
-    signalType === "BUY" ? tpMultiplier : signalType === "SELL" ? -tpMultiplier : 0;
+    signalType === "BUY"
+      ? tpMultiplier
+      : signalType === "SELL"
+        ? -tpMultiplier
+        : 0;
   const stopMultiplier =
-    signalType === "BUY" ? -slMultiplier : signalType === "SELL" ? slMultiplier : 0;
+    signalType === "BUY"
+      ? -slMultiplier
+      : signalType === "SELL"
+        ? slMultiplier
+        : 0;
 
   const target =
-    signalType !== "HOLD" ? currentPrice + resolvedAtr * targetMultiplier : null;
+    signalType !== "HOLD"
+      ? currentPrice + resolvedAtr * targetMultiplier
+      : null;
   const stopLoss =
     signalType !== "HOLD" ? currentPrice + resolvedAtr * stopMultiplier : null;
 
@@ -856,6 +1315,7 @@ const getRuleSignalContext = (
       sellReasons,
       availableMaxScore,
       dynamicThreshold,
+      marketRegime,
     },
     price: {
       entry: currentPrice,
@@ -870,8 +1330,15 @@ const getRuleSignalContext = (
 };
 
 const attachMlMetadata = (baseSignal, featureSnapshot, mlOverrides = {}) => {
-  const ruleConfidence = mlOverrides.ruleConfidence ?? baseSignal.ruleConfidence ?? 50;
+  const ruleConfidence =
+    mlOverrides.ruleConfidence ?? baseSignal.ruleConfidence ?? 50;
   const finalConfidence = mlOverrides.finalConfidence ?? ruleConfidence;
+
+  // Match the backtest's default TP/SL look-ahead window per timeframe.
+  const resolutionCandles = getDefaultResolutionCandles(baseSignal.timeframe);
+  const expiresAt = new Date(
+    Date.now() + timeframeToMs(baseSignal.timeframe) * resolutionCandles,
+  );
 
   return {
     symbol: baseSignal.symbol,
@@ -905,6 +1372,7 @@ const attachMlMetadata = (baseSignal, featureSnapshot, mlOverrides = {}) => {
     price: baseSignal.price,
     reasoning: baseSignal.reasoning,
     timeframe: baseSignal.timeframe,
+    expiresAt,
     status: "ACTIVE",
     outcome: "PENDING",
     actualDirection: null,
@@ -916,6 +1384,9 @@ const attachMlMetadata = (baseSignal, featureSnapshot, mlOverrides = {}) => {
       priceChangePct: null,
       marketPriceChangePct: null,
       leveragedReturnPct: null,
+      feesPerTradePct: null,
+      feeImpactPct: null,
+      netLeveragedReturnPct: null,
     },
   };
 };
@@ -944,8 +1415,15 @@ export const enrichSignalWithMlPrediction = async (
   const ruleConfidence = Number(
     signalData.ml?.ruleConfidence ?? signalData.confidence ?? 0,
   );
-  const prediction = await predictSignalWinProbability(signalData.features, metadata);
-  const guardrailDecision = buildAccuracyGuardrailDecision(signalData, prediction);
+  const prediction = await predictSignalWinProbability(
+    signalData.features,
+    metadata,
+  );
+  const shouldApplyAccuracyGuardrails =
+    metadata.applyAccuracyGuardrails !== false;
+  const guardrailDecision = shouldApplyAccuracyGuardrails
+    ? buildAccuracyGuardrailDecision(signalData, prediction)
+    : { shouldAbstain: false, reasons: [], ruleConfidence };
 
   if (guardrailDecision.shouldAbstain) {
     return convertDirectionalSignalToHold(
@@ -997,11 +1475,10 @@ export const enrichSignalWithMlPrediction = async (
 };
 
 /**
- * Generate trading signal based on technical indicators and attach ML-ready features
- * @param {string} symbol - Trading pair symbol (e.g., 'BTCUSDT')
- * @param {Array} klineData - Candlestick data
- * @param {Object} options - Additional options
- * @returns {Object|null} - Generated signal or null
+ * Generate trading signal based on technical indicators and attach ML-ready features.
+ * Note: The feature snapshot (Python service) is built before the rule engine because
+ * the rule engine uses the snapshot's enriched indicators. HOLD signals still trigger
+ * the Python service — this is intentional so all signals have feature records.
  */
 export const generateSignal = async (symbol, klineData, options = {}) => {
   const featureSnapshot = await buildMlFeatureSnapshotWithFallback(klineData, {
@@ -1009,7 +1486,12 @@ export const generateSignal = async (symbol, klineData, options = {}) => {
     timeframe: options.timeframe || "1h",
     signalType: options.signalType || "UNKNOWN",
   });
-  const baseSignal = getRuleSignalContext(symbol, klineData, options, featureSnapshot);
+  const baseSignal = getRuleSignalContext(
+    symbol,
+    klineData,
+    options,
+    featureSnapshot,
+  );
   if (!baseSignal) {
     return null;
   }
@@ -1038,17 +1520,31 @@ export const generateSignalWithMl = async (symbol, klineData, options = {}) => {
     signalType: signalData.type,
     leverage: signalData.leverage,
     modelVersion: options.mlModelVersion || null,
+    applyAccuracyGuardrails: options.applyAccuracyGuardrails,
   });
 };
 
 /**
- * Save signal to database
- * @param {Object} signalData - Signal data
- * @param {string} userId - User ID (optional)
- * @returns {Object} - Saved signal
+ * Save signal to database.
  */
 export const saveSignal = async (signalData, userId = null) => {
   try {
+    if (userId && signalData.type !== "HOLD") {
+      const duplicateActiveSignal = await Signal.findOne({
+        userId,
+        symbol: signalData.symbol,
+        timeframe: signalData.timeframe,
+        status: "ACTIVE",
+        outcome: "PENDING",
+        type: { $in: ["BUY", "SELL"] },
+      }).sort({ createdAt: -1 });
+
+      if (duplicateActiveSignal) {
+        duplicateActiveSignal.wasDuplicate = true;
+        return duplicateActiveSignal;
+      }
+    }
+
     const signal = new Signal({
       expiresAt:
         signalData.status && signalData.status !== "ACTIVE"
@@ -1081,15 +1577,19 @@ export const saveSignal = async (signalData, userId = null) => {
 };
 
 /**
- * Get active signals
- * @param {string} symbol - Filter by symbol (optional)
- * @param {number} limit - Number of signals to return
- * @returns {Array} - Active signals
+ * Get active signals.
+ * FIX: Added userId parameter (optional) for consistency with getSignalHistory.
+ * Previously, active signals from all users were visible without filtering.
  */
-export const getActiveSignals = async (symbol = null, limit = 50) => {
+export const getActiveSignals = async (
+  symbol = null,
+  limit = 50,
+  userId = null,
+) => {
   try {
     const query = { status: "ACTIVE" };
     if (symbol) query.symbol = symbol.toUpperCase();
+    if (userId) query.userId = userId;
 
     const signals = await Signal.find(query)
       .sort({ createdAt: -1 })
@@ -1103,10 +1603,7 @@ export const getActiveSignals = async (symbol = null, limit = 50) => {
 };
 
 /**
- * Get signal history
- * @param {string} symbol - Filter by symbol (optional)
- * @param {number} limit - Number of signals to return
- * @returns {Array} - Signal history
+ * Get signal history for a specific user.
  */
 export const getSignalHistory = async (userId, symbol = null, limit = 100) => {
   try {
@@ -1125,9 +1622,7 @@ export const getSignalHistory = async (userId, symbol = null, limit = 100) => {
 };
 
 /**
- * Get aggregated performance summary for resolved signals
- * @param {object} filters - Optional filters
- * @returns {object} - Summary metrics
+ * Get aggregated performance summary for resolved signals.
  */
 export const getSignalPerformanceSummary = async (filters = {}) => {
   try {
@@ -1137,68 +1632,54 @@ export const getSignalPerformanceSummary = async (filters = {}) => {
       resolvedAt: { $ne: null },
     };
 
-    if (filters.userId) {
-      match.userId = filters.userId;
-    }
+    if (filters.userId) match.userId = filters.userId;
+    if (filters.symbol) match.symbol = filters.symbol.toUpperCase();
+    if (filters.timeframe) match.timeframe = filters.timeframe;
 
-    if (filters.symbol) {
-      match.symbol = filters.symbol.toUpperCase();
-    }
-
-    if (filters.timeframe) {
-      match.timeframe = filters.timeframe;
-    }
-
-    const [summary = null, byOutcome = [], byTimeframe = []] = await Promise.all([
-      Signal.aggregate([
-        { $match: match },
-        {
-          $group: {
-            _id: null,
-            totalResolved: { $sum: 1 },
-            wins: {
-              $sum: { $cond: [{ $eq: ["$outcome", "WIN"] }, 1, 0] },
+    const [summary = null, byOutcome = [], byTimeframe = []] =
+      await Promise.all([
+        Signal.aggregate([
+          { $match: match },
+          {
+            $group: {
+              _id: null,
+              totalResolved: { $sum: 1 },
+              wins: { $sum: { $cond: [{ $eq: ["$outcome", "WIN"] }, 1, 0] } },
+              losses: {
+                $sum: { $cond: [{ $eq: ["$outcome", "LOSS"] }, 1, 0] },
+              },
+              neutrals: {
+                $sum: { $cond: [{ $eq: ["$outcome", "NEUTRAL"] }, 1, 0] },
+              },
+              avgConfidence: { $avg: "$confidence" },
+              avgReturnPct: { $avg: "$performance.leveragedReturnPct" },
+              avgReturnAbs: { $avg: "$performance.priceChange" },
+              avgUnderlyingMovePct: {
+                $avg: "$performance.marketPriceChangePct",
+              },
+              avgLeverage: { $avg: "$leverage" },
+              bestReturnPct: { $max: "$performance.leveragedReturnPct" },
+              worstReturnPct: { $min: "$performance.leveragedReturnPct" },
             },
-            losses: {
-              $sum: { $cond: [{ $eq: ["$outcome", "LOSS"] }, 1, 0] },
-            },
-            neutrals: {
-              $sum: { $cond: [{ $eq: ["$outcome", "NEUTRAL"] }, 1, 0] },
-            },
-            avgConfidence: { $avg: "$confidence" },
-            avgReturnPct: { $avg: "$performance.leveragedReturnPct" },
-            avgReturnAbs: { $avg: "$performance.priceChange" },
-            avgUnderlyingMovePct: { $avg: "$performance.marketPriceChangePct" },
-            avgLeverage: { $avg: "$leverage" },
-            bestReturnPct: { $max: "$performance.leveragedReturnPct" },
-            worstReturnPct: { $min: "$performance.leveragedReturnPct" },
           },
-        },
-      ]),
-      Signal.aggregate([
-        { $match: match },
-        {
-          $group: {
-            _id: "$outcome",
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      Signal.aggregate([
-        { $match: match },
-        {
-          $group: {
-            _id: "$timeframe",
-            total: { $sum: 1 },
-            wins: {
-              $sum: { $cond: [{ $eq: ["$outcome", "WIN"] }, 1, 0] },
+        ]),
+        Signal.aggregate([
+          { $match: match },
+          { $group: { _id: "$outcome", count: { $sum: 1 } } },
+        ]),
+        Signal.aggregate([
+          { $match: match },
+          {
+            $group: {
+              _id: "$timeframe",
+              total: { $sum: 1 },
+              wins: { $sum: { $cond: [{ $eq: ["$outcome", "WIN"] }, 1, 0] } },
+              avgReturnPct: { $avg: "$performance.leveragedReturnPct" },
             },
-            avgReturnPct: { $avg: "$performance.leveragedReturnPct" },
           },
-        },
-        { $sort: { total: -1, _id: 1 } },
-      ]),
-    ]);
+          { $sort: { total: -1, _id: 1 } },
+        ]),
+      ]);
 
     const totalResolved = summary?.totalResolved || 0;
     const wins = summary?.wins || 0;
@@ -1206,7 +1687,9 @@ export const getSignalPerformanceSummary = async (filters = {}) => {
     const neutrals = summary?.neutrals || 0;
 
     const toRate = (count) =>
-      totalResolved > 0 ? Number(((count / totalResolved) * 100).toFixed(2)) : 0;
+      totalResolved > 0
+        ? Number(((count / totalResolved) * 100).toFixed(2))
+        : 0;
 
     return {
       totalResolved,
@@ -1247,7 +1730,9 @@ export const getSignalPerformanceSummary = async (filters = {}) => {
         total: item.total,
         wins: item.wins,
         winRate:
-          item.total > 0 ? Number(((item.wins / item.total) * 100).toFixed(2)) : 0,
+          item.total > 0
+            ? Number(((item.wins / item.total) * 100).toFixed(2))
+            : 0,
         avgReturnPct: item.avgReturnPct
           ? Number(item.avgReturnPct.toFixed(2))
           : 0,
@@ -1259,27 +1744,40 @@ export const getSignalPerformanceSummary = async (filters = {}) => {
   }
 };
 
-export const getMlMonitoringSummary = async (filters = {}) => {
+/**
+ * Get ML monitoring summary.
+ *
+ * FIX: Added a hard cap of 5000 documents to prevent OOM on large collections.
+ * The previous version called Signal.find() with no limit.
+ * TODO: Replace the in-JS aggregation with Mongo $bucket/$group pipelines
+ *       once collection size makes the document cap insufficient.
+ */
+export const getMlMonitoringSummary = async (
+  filters = {},
+  documentLimit = 5000,
+) => {
   try {
     const match = {};
+    if (filters.userId) match.userId = filters.userId;
+    if (filters.symbol) match.symbol = filters.symbol.toUpperCase();
+    if (filters.timeframe) match.timeframe = filters.timeframe;
 
-    if (filters.symbol) {
-      match.symbol = filters.symbol.toUpperCase();
-    }
-
-    if (filters.timeframe) {
-      match.timeframe = filters.timeframe;
-    }
-
-    const signals = await Signal.find(match).lean();
+    const signals = await Signal.find(match)
+      .sort({ createdAt: -1 })
+      .limit(documentLimit)
+      .lean();
 
     const totalSignals = signals.length;
     const mlSignals = signals.filter((signal) => signal.ml);
-    const readySignals = mlSignals.filter((signal) => signal.ml?.status === "READY");
+    const readySignals = mlSignals.filter(
+      (signal) => signal.ml?.status === "READY",
+    );
     const unavailableSignals = mlSignals.filter(
       (signal) => signal.ml?.status === "UNAVAILABLE",
     );
-    const pendingSignals = mlSignals.filter((signal) => signal.ml?.status === "PENDING");
+    const pendingSignals = mlSignals.filter(
+      (signal) => signal.ml?.status === "PENDING",
+    );
     const resolvedReadySignals = readySignals.filter((signal) =>
       ["WIN", "LOSS"].includes(signal.outcome),
     );
@@ -1313,8 +1811,13 @@ export const getMlMonitoringSummary = async (filters = {}) => {
           probability < bucket.max
         );
       });
-      const wins = bucketSignals.filter((signal) => signal.outcome === "WIN").length;
-      const avgProbability = avg(bucketSignals, (signal) => signal.ml?.probability ?? 0);
+      const wins = bucketSignals.filter(
+        (signal) => signal.outcome === "WIN",
+      ).length;
+      const avgProbability = avg(
+        bucketSignals,
+        (signal) => signal.ml?.probability ?? 0,
+      );
 
       return {
         bucket: bucket.label,
@@ -1322,7 +1825,9 @@ export const getMlMonitoringSummary = async (filters = {}) => {
         avgProbabilityPct: Number((avgProbability * 100).toFixed(2)),
         actualWinRatePct: toRate(wins, bucketSignals.length),
         calibrationGapPct: Number(
-          (toRate(wins, bucketSignals.length) - avgProbability * 100).toFixed(2),
+          (toRate(wins, bucketSignals.length) - avgProbability * 100).toFixed(
+            2,
+          ),
         ),
       };
     });
@@ -1339,12 +1844,18 @@ export const getMlMonitoringSummary = async (filters = {}) => {
         count,
         rate: toRate(count, readySignals.length),
       }))
-      .sort((a, b) => b.count - a.count || a.modelVersion.localeCompare(b.modelVersion));
+      .sort(
+        (a, b) =>
+          b.count - a.count || a.modelVersion.localeCompare(b.modelVersion),
+      );
 
     const predictionSourcesMap = new Map();
     for (const signal of mlSignals) {
       const source = signal.ml?.predictionSource || "unknown";
-      predictionSourcesMap.set(source, (predictionSourcesMap.get(source) || 0) + 1);
+      predictionSourcesMap.set(
+        source,
+        (predictionSourcesMap.get(source) || 0) + 1,
+      );
     }
 
     const predictionSources = Array.from(predictionSourcesMap.entries()).map(
@@ -1357,23 +1868,35 @@ export const getMlMonitoringSummary = async (filters = {}) => {
 
     return {
       totalSignals,
+      documentLimit,
       mlTrackedSignals: mlSignals.length,
       mlCoverageRate: toRate(mlSignals.length, totalSignals),
       readyPredictions: readySignals.length,
       readyPredictionRate: toRate(readySignals.length, mlSignals.length),
       unavailablePredictions: unavailableSignals.length,
-      unavailablePredictionRate: toRate(unavailableSignals.length, mlSignals.length),
+      unavailablePredictionRate: toRate(
+        unavailableSignals.length,
+        mlSignals.length,
+      ),
       pendingPredictions: pendingSignals.length,
       pendingPredictionRate: toRate(pendingSignals.length, mlSignals.length),
       resolvedMlSignals: resolvedReadySignals.length,
       avgMlProbabilityPct: Number(
-        (avg(readySignals, (signal) => signal.ml?.probability ?? 0) * 100).toFixed(2),
+        (
+          avg(readySignals, (signal) => signal.ml?.probability ?? 0) * 100
+        ).toFixed(2),
       ),
       avgRuleConfidence: Number(
-        avg(mlSignals, (signal) => signal.ml?.ruleConfidence ?? signal.confidence).toFixed(2),
+        avg(
+          mlSignals,
+          (signal) => signal.ml?.ruleConfidence ?? signal.confidence,
+        ).toFixed(2),
       ),
       avgFinalConfidence: Number(
-        avg(mlSignals, (signal) => signal.ml?.finalConfidence ?? signal.confidence).toFixed(2),
+        avg(
+          mlSignals,
+          (signal) => signal.ml?.finalConfidence ?? signal.confidence,
+        ).toFixed(2),
       ),
       avgResolvedMlReturnPct: Number(
         avg(
@@ -1382,7 +1905,10 @@ export const getMlMonitoringSummary = async (filters = {}) => {
         ).toFixed(2),
       ),
       avgResolvedMlWinProbabilityPct: Number(
-        (avg(resolvedReadySignals, (signal) => signal.ml?.probability ?? 0) * 100).toFixed(2),
+        (
+          avg(resolvedReadySignals, (signal) => signal.ml?.probability ?? 0) *
+          100
+        ).toFixed(2),
       ),
       calibration,
       modelVersions,
@@ -1395,11 +1921,7 @@ export const getMlMonitoringSummary = async (filters = {}) => {
 };
 
 /**
- * Resolve a signal with the observed market outcome
- * @param {string} signalId - Signal ID
- * @param {object} resolutionData - Resolution details
- * @param {string} userId - User ID
- * @returns {Object|null} - Updated signal
+ * Resolve a signal with the observed market outcome.
  */
 export const resolveSignal = async (signalId, resolutionData, userId) => {
   try {
@@ -1417,9 +1939,11 @@ export const resolveSignal = async (signalId, resolutionData, userId) => {
 };
 
 /**
- * Resolve due active signals using current market prices
- * @param {number} batchSize - Max signals to process per run
- * @returns {object} - Resolution summary
+ * Resolve active signals using the same TP/SL intrabar semantics as backtests.
+ *
+ * Signals are completed as soon as a closed candle proves that target or
+ * stop-loss was hit. If neither was hit, they are completed at expiry using
+ * the final candle close.
  */
 export const resolveExpiredSignals = async (batchSize = 100) => {
   if (isResolvingSignals) {
@@ -1429,7 +1953,8 @@ export const resolveExpiredSignals = async (batchSize = 100) => {
   isResolvingSignals = true;
 
   try {
-    const now = Date.now();
+    const now = new Date();
+
     const activeSignals = await Signal.find({
       status: "ACTIVE",
       outcome: "PENDING",
@@ -1437,39 +1962,29 @@ export const resolveExpiredSignals = async (batchSize = 100) => {
       .sort({ createdAt: 1 })
       .limit(batchSize);
 
-    const dueSignals = activeSignals.filter((signal) =>
-      isSignalDueForResolution(signal, now),
-    );
-
-    if (dueSignals.length === 0) {
-      return { processed: activeSignals.length, resolved: 0, skipped: 0 };
+    if (activeSignals.length === 0) {
+      return { processed: 0, resolved: 0, skipped: 0 };
     }
 
-    const priceCache = new Map();
     let resolved = 0;
     let skipped = 0;
 
-    for (const signal of dueSignals) {
+    for (const signal of activeSignals) {
       try {
-        const symbol = signal.symbol.toUpperCase();
-        let latestPrice = priceCache.get(symbol);
-
-        if (!latestPrice) {
-          const priceData = await getPrice(symbol);
-          latestPrice = Number(priceData.price);
-          priceCache.set(symbol, latestPrice);
-        }
-
-        if (!Number.isFinite(latestPrice) || latestPrice <= 0) {
-          skipped += 1;
+        const resolution = await buildAutoResolutionFromCandles(signal, now);
+        if (!resolution) {
           continue;
         }
 
         await applyResolutionToSignal(signal, {
-          resolutionPrice: latestPrice,
-          resolvedAt: new Date(),
-          resolutionSource: "binance_ticker_price",
-          resolutionNotes: `Auto-resolved after ${signal.timeframe} horizon elapsed.`,
+          resolutionPrice: resolution.resolutionPrice,
+          resolvedAt: resolution.resolvedAt,
+          exitReason: resolution.exitReason,
+          resolutionSource: resolution.exitReason,
+          feesPerTradePct: DEFAULT_FEES_PER_TRADE_PCT,
+          resolutionNotes:
+            `Auto-resolved with ${resolution.resolutionMode} ` +
+            `after ${resolution.holdingCandles} ${signal.timeframe} candle(s).`,
           status: "COMPLETED",
         });
 
@@ -1483,11 +1998,7 @@ export const resolveExpiredSignals = async (batchSize = 100) => {
       }
     }
 
-    return {
-      processed: activeSignals.length,
-      resolved,
-      skipped,
-    };
+    return { processed: activeSignals.length, resolved, skipped };
   } catch (error) {
     console.error("Error resolving expired signals:", error.message);
     throw error;
@@ -1497,8 +2008,7 @@ export const resolveExpiredSignals = async (batchSize = 100) => {
 };
 
 /**
- * Start background job that auto-resolves expired signals
- * @param {number} intervalMinutes - Polling interval in minutes
+ * Start background job that auto-resolves expired signals.
  */
 export const startSignalResolutionJob = (intervalMinutes = 5) => {
   if (signalResolutionInterval) {
@@ -1514,15 +2024,18 @@ export const startSignalResolutionJob = (intervalMinutes = 5) => {
     console.error("Initial signal resolution run failed:", error.message);
   });
 
-  signalResolutionInterval = setInterval(() => {
-    resolveExpiredSignals().catch((error) => {
-      console.error("Scheduled signal resolution run failed:", error.message);
-    });
-  }, intervalMinutes * 60 * 1000);
+  signalResolutionInterval = setInterval(
+    () => {
+      resolveExpiredSignals().catch((error) => {
+        console.error("Scheduled signal resolution run failed:", error.message);
+      });
+    },
+    intervalMinutes * 60 * 1000,
+  );
 };
 
 /**
- * Stop background signal auto-resolution job
+ * Stop background signal auto-resolution job.
  */
 export const stopSignalResolutionJob = () => {
   if (signalResolutionInterval) {
@@ -1533,10 +2046,7 @@ export const stopSignalResolutionJob = () => {
 };
 
 /**
- * Update signal status
- * @param {string} signalId - Signal ID
- * @param {string} status - New status (COMPLETED, CANCELLED)
- * @returns {Object|null} - Updated signal
+ * Update signal status.
  */
 export const updateSignalStatus = async (signalId, status, userId) => {
   try {
@@ -1564,4 +2074,3 @@ export const updateSignalStatus = async (signalId, status, userId) => {
     return null;
   }
 };
-

@@ -32,6 +32,12 @@ const parseArgs = () => {
     } else if (arg === "--source" && nextValue) {
       options.source = nextValue;
       index += 1;
+    } else if (arg === "--include-old-data") {
+      options.minResolvedAt = null;
+    } else if (arg === "--allow-untrusted-resolution") {
+      options.trustedResolutionOnly = false;
+    } else if (arg === "--allow-unguarded-backtests") {
+      options.requireBacktestGuardrails = false;
     }
   }
 

@@ -138,32 +138,128 @@ const getMultiple24hTickers = async (symbols) => {
   }
 };
 
+const formatKlines = (responseData = []) =>
+  responseData.map((kline) => ({
+    openTime: kline[0],
+    open: parseFloat(kline[1]),
+    high: parseFloat(kline[2]),
+    low: parseFloat(kline[3]),
+    close: parseFloat(kline[4]),
+    volume: parseFloat(kline[5]),
+    closeTime: kline[6],
+    quoteVolume: parseFloat(kline[7]),
+  }));
+
+const toKlineRequestConfig = (limitOrOptions) => {
+  if (
+    limitOrOptions &&
+    typeof limitOrOptions === "object" &&
+    !Array.isArray(limitOrOptions)
+  ) {
+    return {
+      limit: Number.parseInt(limitOrOptions.limit, 10) || 100,
+      startTime:
+        limitOrOptions.startTime !== undefined
+          ? Number(limitOrOptions.startTime)
+          : undefined,
+      endTime:
+        limitOrOptions.endTime !== undefined
+          ? Number(limitOrOptions.endTime)
+          : undefined,
+    };
+  }
+
+  return {
+    limit: Number.parseInt(limitOrOptions, 10) || 100,
+    startTime: undefined,
+    endTime: undefined,
+  };
+};
+
 // Get candlestick/kline data
-const getKlines = async (symbol, interval = "1h", limit = 100) => {
-  const cacheKey = `klines_${symbol.toUpperCase()}_${interval}_${limit}`;
+const getKlines = async (symbol, interval = "1h", limitOrOptions = 100) => {
+  const { limit, startTime, endTime } = toKlineRequestConfig(limitOrOptions);
+  const cacheKey = `klines_${symbol.toUpperCase()}_${interval}_${limit}_${startTime || "na"}_${endTime || "na"}`;
   const cachedData = cache.get(cacheKey);
   if (cachedData) return cachedData;
 
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_BASE_URL}/klines`, {
-      params: {
-        symbol: symbol.toUpperCase(),
-        interval,
-        limit,
-      },
-    });
+    const params = {
+      symbol: symbol.toUpperCase(),
+      interval,
+      limit,
+    };
 
-    // Transform data for easier consumption
-    const formattedData = response.data.map((kline) => ({
-      openTime: kline[0],
-      open: parseFloat(kline[1]),
-      high: parseFloat(kline[2]),
-      low: parseFloat(kline[3]),
-      close: parseFloat(kline[4]),
-      volume: parseFloat(kline[5]),
-      closeTime: kline[6],
-      quoteVolume: parseFloat(kline[7]),
-    }));
+    if (Number.isFinite(startTime)) {
+      params.startTime = startTime;
+    }
+
+    if (Number.isFinite(endTime)) {
+      params.endTime = endTime;
+    }
+
+    let formattedData;
+
+    if (Number.isFinite(startTime) || Number.isFinite(endTime)) {
+      const allKlines = [];
+      let nextStartTime = Number.isFinite(startTime) ? startTime : undefined;
+      const maxBatchSize = Math.min(Math.max(limit, 1), 1000);
+
+      while (allKlines.length < limit) {
+        const remaining = limit - allKlines.length;
+        const response = await axios.get(`${BINANCE_FUTURES_BASE_URL}/klines`, {
+          params: {
+            ...params,
+            limit: Math.min(maxBatchSize, remaining),
+            ...(Number.isFinite(nextStartTime)
+              ? { startTime: nextStartTime }
+              : {}),
+          },
+        });
+
+        const batch = formatKlines(response.data);
+        if (batch.length === 0) {
+          break;
+        }
+
+        allKlines.push(...batch);
+
+        if (batch.length < Math.min(maxBatchSize, remaining)) {
+          break;
+        }
+
+        const lastOpenTime = batch[batch.length - 1]?.openTime;
+        if (!Number.isFinite(lastOpenTime)) {
+          break;
+        }
+
+        nextStartTime = lastOpenTime + 1;
+
+        if (
+          Number.isFinite(endTime) &&
+          batch[batch.length - 1]?.closeTime >= endTime
+        ) {
+          break;
+        }
+      }
+
+      formattedData = allKlines
+        .filter((kline) => {
+          if (Number.isFinite(startTime) && kline.openTime < startTime) {
+            return false;
+          }
+          if (Number.isFinite(endTime) && kline.openTime > endTime) {
+            return false;
+          }
+          return true;
+        })
+        .slice(0, limit);
+    } else {
+      const response = await axios.get(`${BINANCE_FUTURES_BASE_URL}/klines`, {
+        params,
+      });
+      formattedData = formatKlines(response.data);
+    }
 
     cache.set(cacheKey, formattedData, 60); // 60 seconds TTL for klines
     return formattedData;

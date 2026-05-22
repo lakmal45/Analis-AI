@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import BacktestRun from "../models/BacktestRun.js";
 import Signal from "../models/Signal.js";
 import { protect } from "../middleware/authMiddleware.js";
@@ -30,12 +30,30 @@ const parseLeverage = (value, fallback = DEFAULT_FUTURES_LEVERAGE) => {
   return Math.min(Math.max(parsed, 1), 125);
 };
 
+const TRUSTED_EXIT_REASONS = new Set([
+  "take_profit_gap",
+  "take_profit_intrabar",
+  "stop_loss_gap",
+  "stop_loss_intrabar",
+  "time_expiry",
+]);
+
+const getClosedKlines = async (symbol, timeframe, limit = 210) => {
+  const requestLimit = limit + 1;
+  const klineData = await getKlines(symbol, timeframe, requestLimit);
+  const now = Date.now();
+
+  return (klineData || [])
+    .filter((candle) => Number(candle.closeTime) <= now)
+    .slice(-limit);
+};
+
 /**
  * @route   GET /api/signals
  * @desc    Get signals with optional status and symbol filtering
  * @access  Public (or Private with protect)
  */
-router.get("/", async (req, res) => {
+router.get("/", protect, async (req, res) => {
   try {
     const { symbol, status, outcome, limit = 50 } = req.query;
 
@@ -51,6 +69,9 @@ router.get("/", async (req, res) => {
     if (outcome && outcome !== "ALL") {
       query.outcome = outcome.toUpperCase();
     }
+    
+    // Ensure signals are user-specific
+    query.userId = req.user.id;
 
     const signals = await Signal.find(query)
       .sort({ createdAt: -1 })
@@ -115,12 +136,8 @@ router.get("/analyze/:symbol", protect, async (req, res) => {
       });
     }
 
-    // Fetch candlestick data
-    const klineData = await getKlines(
-      marketSymbol,
-      timeframe,
-      210,
-    );
+    // Fetch only closed candles so live indicators do not repaint.
+    const klineData = await getClosedKlines(marketSymbol, timeframe, 210);
 
     if (!klineData || klineData.length < 26) {
       return res.status(400).json({
@@ -180,8 +197,8 @@ router.post("/generate", protect, async (req, res) => {
       });
     }
 
-    // Fetch candlestick data
-    const klineData = await getKlines(marketSymbol, timeframe, 210);
+    // Fetch only closed candles so live indicators do not repaint.
+    const klineData = await getClosedKlines(marketSymbol, timeframe, 210);
 
     if (!klineData || klineData.length < 26) {
       return res.status(400).json({
@@ -203,7 +220,7 @@ router.post("/generate", protect, async (req, res) => {
       });
     }
 
-    // Save signal to database
+    // Save signal to database, or return the existing active one for this setup.
     const savedSignal = await saveSignal(signalData, req.user.id);
 
     if (!savedSignal) {
@@ -213,8 +230,9 @@ router.post("/generate", protect, async (req, res) => {
       });
     }
 
-    res.status(201).json({
+    res.status(savedSignal.wasDuplicate ? 200 : 201).json({
       success: true,
+      duplicateActiveSignal: Boolean(savedSignal.wasDuplicate),
       data: savedSignal,
     });
   } catch (error) {
@@ -278,6 +296,8 @@ router.put("/:id/resolve", protect, async (req, res) => {
       resolvedAt,
       resolutionSource,
       resolutionNotes,
+      exitReason,
+      feesPerTradePct,
       status = "COMPLETED",
     } = req.body;
 
@@ -295,12 +315,22 @@ router.put("/:id/resolve", protect, async (req, res) => {
       });
     }
 
+    if (status === "COMPLETED" && !TRUSTED_EXIT_REASONS.has(exitReason)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "A trusted exitReason is required: take_profit_gap, take_profit_intrabar, stop_loss_gap, stop_loss_intrabar, or time_expiry",
+      });
+    }
+
     const signal = await resolveSignal(
       req.params.id,
       {
         resolutionPrice,
         resolvedAt,
-        resolutionSource,
+        exitReason,
+        feesPerTradePct,
+        resolutionSource: resolutionSource || exitReason,
         resolutionNotes,
         status,
       },
@@ -402,14 +432,50 @@ router.get("/backtest/history", protect, async (req, res) => {
 });
 
 /**
+ * @route   DELETE /api/signals/backtest/history/:id
+ * @desc    Delete a saved backtest run for the authenticated user
+ * @access  Private
+ */
+router.delete("/backtest/history/:id", protect, async (req, res) => {
+  try {
+    const deletedBacktest = await BacktestRun.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user.id,
+    });
+
+    if (!deletedBacktest) {
+      return res.status(404).json({
+        success: false,
+        message: "Backtest run not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Backtest run deleted successfully",
+      data: {
+        backtestRunId: deletedBacktest._id,
+      },
+    });
+  } catch (error) {
+    console.error("Error deleting backtest run:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
  * @route   GET /api/signals/stats/summary
  * @desc    Get resolved signal performance summary
  * @access  Public
  */
-router.get("/stats/summary", async (req, res) => {
+router.get("/stats/summary", protect, async (req, res) => {
   try {
     const { symbol, timeframe } = req.query;
-    const summary = await getSignalPerformanceSummary({ symbol, timeframe });
+    const summary = await getSignalPerformanceSummary({ symbol, timeframe, userId: req.user.id });
 
     res.json({
       success: true,
@@ -430,10 +496,10 @@ router.get("/stats/summary", async (req, res) => {
  * @desc    Get ML monitoring summary and calibration metrics
  * @access  Public
  */
-router.get("/stats/ml-summary", async (req, res) => {
+router.get("/stats/ml-summary", protect, async (req, res) => {
   try {
     const { symbol, timeframe } = req.query;
-    const summary = await getMlMonitoringSummary({ symbol, timeframe });
+    const summary = await getMlMonitoringSummary({ symbol, timeframe, userId: req.user.id });
 
     res.json({
       success: true,
@@ -456,7 +522,7 @@ router.get("/stats/ml-summary", async (req, res) => {
  * NOTE: This route MUST be defined AFTER all literal-path GET routes
  *       to prevent /:id from matching paths like /stats/summary
  */
-router.get("/:id", async (req, res) => {
+router.get("/:id", protect, async (req, res) => {
   try {
     const signal = await Signal.findById(req.params.id);
 
@@ -464,6 +530,13 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Signal not found",
+      });
+    }
+
+    if (signal.userId && signal.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to view this signal",
       });
     }
 
