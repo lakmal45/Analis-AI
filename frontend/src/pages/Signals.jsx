@@ -136,7 +136,7 @@ const Signals = () => {
       });
       const generatedSignal = response.data.data;
       alert(
-        `Futures signal generated: ${generatedSignal.type} at ${generatedSignal.leverage}x with ${generatedSignal.confidence}% final confidence${generatedSignal.ml?.probability !== null && generatedSignal.ml?.probability !== undefined ? ` (${(generatedSignal.ml.probability * 100).toFixed(1)}% ML win probability)` : ""}`,
+        `Futures signal generated: ${generatedSignal.signal_type || generatedSignal.type} at ${generatedSignal.leverage}x with ${generatedSignal.confidence}% final confidence${generatedSignal.ml?.probability !== null && generatedSignal.ml?.probability !== undefined ? ` (${(generatedSignal.ml.probability * 100).toFixed(1)}% ML win probability)` : ""}`,
       );
       await fetchSignals();
       await fetchSignalSummary();
@@ -395,7 +395,7 @@ const Signals = () => {
 
               return (
                 <div
-                  key={signal._id}
+                  key={signal.id || signal._id}
                   className="flex flex-1 flex-col items-center gap-2"
                 >
                   <span className="text-[11px] text-gray-500">
@@ -541,7 +541,7 @@ const Signals = () => {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           {signals.map((signal) => (
             <SignalCard
-              key={signal._id}
+              key={signal.id || signal._id}
               signal={signal}
               onUpdateStatus={updateSignalStatus}
               showActions={true}
@@ -558,19 +558,19 @@ const Signals = () => {
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <div className="text-center">
               <p className="text-3xl font-bold text-green-400">
-                {signals.filter((signal) => signal.type === "BUY").length}
+                {signals.filter((signal) => (signal.signal_type || signal.type) === "BUY").length}
               </p>
               <p className="text-sm text-gray-400">BUY Signals</p>
             </div>
             <div className="text-center">
               <p className="text-3xl font-bold text-red-400">
-                {signals.filter((signal) => signal.type === "SELL").length}
+                {signals.filter((signal) => (signal.signal_type || signal.type) === "SELL").length}
               </p>
               <p className="text-sm text-gray-400">SELL Signals</p>
             </div>
             <div className="text-center">
               <p className="text-3xl font-bold text-yellow-400">
-                {signals.filter((signal) => signal.type === "HOLD").length}
+                {signals.filter((signal) => (signal.signal_type || signal.type) === "HOLD").length}
               </p>
               <p className="text-sm text-gray-400">HOLD Signals</p>
             </div>

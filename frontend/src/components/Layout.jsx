@@ -7,23 +7,12 @@ import api from "../api/api";
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [aiInput, setAiInput] = useState("");
-  const [aiMessages, setAiMessages] = useState([
-    { role: "assistant", content: "Hi! Ask me anything about crypto markets." },
-  ]);
-  const [aiLoading, setAiLoading] = useState(false);
   const { user, logout } = useAuth();
   const { isDarkMode, toggleDarkMode } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
-  const chatEndRef = useRef(null);
   const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [aiMessages]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -41,31 +30,6 @@ const Layout = () => {
     navigate("/");
   };
 
-  const handleAiSend = async () => {
-    if (!aiInput.trim() || aiLoading) return;
-    const msg = aiInput;
-    setAiMessages((prev) => [...prev, { role: "user", content: msg }]);
-    setAiInput("");
-    setAiLoading(true);
-    try {
-      const response = await api.post("/ai/chat", {
-        message: msg,
-        history: aiMessages.slice(-6),
-      });
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: response.data.message },
-      ]);
-    } catch {
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Sorry, AI service is unavailable right now." },
-      ]);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   const navItems = [
     {
       path: "/app/dashboard",
@@ -76,15 +40,7 @@ const Layout = () => {
         </svg>
       ),
     },
-    {
-      path: "/app/analysis",
-      label: "Analysis",
-      icon: (
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-        </svg>
-      ),
-    },
+
     {
       path: "/app/watchlist",
       label: "Watchlist",
@@ -114,12 +70,13 @@ const Layout = () => {
         </svg>
       ),
     },
+
     {
-      path: "/app/chat",
-      label: "AI Chat",
+      path: "/app/ml-settings",
+      label: "ML Settings",
       icon: (
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
         </svg>
       ),
     },
@@ -283,20 +240,6 @@ const Layout = () => {
               )}
             </button>
 
-            {/* AI Assistant toggle */}
-            <button
-              onClick={() => setAiPanelOpen(!aiPanelOpen)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                aiPanelOpen
-                  ? "bg-gradient-to-r from-blue-600 to-violet-600 text-white shadow-lg shadow-blue-600/25"
-                  : "bg-white/[0.04] border border-white/[0.06] text-gray-300 hover:bg-white/[0.08] hover:border-white/[0.12] hover:text-white"
-              }`}
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span className="hidden sm:inline">AI Assistant</span>
-            </button>
 
             {/* User Dropdown */}
             <div className="relative" ref={dropdownRef}>
@@ -365,108 +308,6 @@ const Layout = () => {
         </main>
       </div>
 
-      {/* AI Assistant Panel */}
-      <div
-        className={`fixed right-0 top-0 bottom-0 z-50 w-[360px] max-w-full bg-[#0d1225] border-l border-white/[0.06] flex flex-col shadow-2xl shadow-black/40 transform transition-transform duration-300 ${
-          aiPanelOpen ? "translate-x-0" : "translate-x-full"
-        }`}
-      >
-        {/* Panel Header */}
-        <div className="h-16 flex items-center justify-between px-5 border-b border-white/[0.06] shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-white">AI Assistant</h3>
-              <p className="text-[10px] text-gray-500">Powered by AnalisAI</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setAiPanelOpen(false)}
-            className="p-2 rounded-xl text-gray-500 hover:text-white hover:bg-white/[0.06] transition-all"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Chat Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {aiMessages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"} animate-fadeIn`}>
-              {m.role === "assistant" && (
-                <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shrink-0 mr-2 mt-1">
-                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                </div>
-              )}
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-                  m.role === "user"
-                    ? "bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-br-md"
-                    : "bg-white/[0.05] border border-white/[0.08] text-gray-200 rounded-bl-md"
-                }`}
-              >
-                {m.content}
-              </div>
-            </div>
-          ))}
-          {aiLoading && (
-            <div className="flex justify-start animate-fadeIn">
-              <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shrink-0 mr-2 mt-1">
-                <svg className="w-3 h-3 text-white animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <div className="bg-white/[0.05] border border-white/[0.08] text-gray-400 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-                </span>
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        {/* Chat Input */}
-        <div className="border-t border-white/[0.06] p-4 shrink-0">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={aiInput}
-              onChange={(e) => setAiInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAiSend()}
-              placeholder="Ask about markets..."
-              className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 focus:bg-white/[0.06] transition-all"
-              disabled={aiLoading}
-            />
-            <button
-              onClick={handleAiSend}
-              disabled={aiLoading || !aiInput.trim()}
-              className="p-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-violet-600 text-white hover:from-blue-500 hover:to-violet-500 transition-all shadow-lg shadow-blue-600/20 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* AI Panel overlay on mobile */}
-      {aiPanelOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 lg:hidden"
-          onClick={() => setAiPanelOpen(false)}
-        />
-      )}
     </div>
   );
 };

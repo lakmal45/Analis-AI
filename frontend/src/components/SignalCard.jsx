@@ -3,7 +3,10 @@ import GlassCard from "./GlassCard";
 
 const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
   const {
+    id,
+    _id,
     symbol,
+    signal_type,
     type,
     confidence,
     leverage,
@@ -37,7 +40,8 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
     }
   };
 
-  const signalColorClass = getSignalColor(type);
+  const activeType = signal_type || type;
+  const signalColorClass = getSignalColor(activeType);
 
   const getOutcomeColor = (value) => {
     switch (value) {
@@ -55,9 +59,9 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
   };
 
   // Format price
-  const formatPrice = (price) => {
-    if (price === null || price === undefined) return "N/A";
-    return price >= 1 ? `$${price.toFixed(2)}` : `$${price.toFixed(6)}`;
+  const formatPrice = (val) => {
+    if (val === null || val === undefined) return "N/A";
+    return val >= 1 ? `$${val.toFixed(2)}` : `$${val.toFixed(6)}`;
   };
 
   const formatPercent = (value) => {
@@ -65,14 +69,78 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
     return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
   };
 
-  const leveragedReturnPct =
-    performance?.leveragedReturnPct ?? performance?.priceChangePct;
-  const marketMovePct = performance?.marketPriceChangePct;
+  // Map backend naming conventions & fallbacks
+  const activeMarketType = marketType || signal.market_type || "FUTURES";
+  const activeCreatedAt = createdAt || signal.created_at;
+  const activeResolvedAt = resolvedAt || signal.resolved_at;
+  const activeResolutionSource = resolutionSource || signal.resolution_source || "Manual";
+  const activeExpectedDirection = expectedDirection || signal.expected_direction || 
+    (activeType === "BUY" ? "UP" : (activeType === "SELL" ? "DOWN" : "NEUTRAL"));
+
+  // Resolve pricing flat vs nested structure
+  const entryPrice = price?.entry ?? signal.price_entry;
+  const currentPrice = price?.current ?? signal.price_current;
+  const targetPrice = price?.target ?? signal.price_target;
+  const stopLossPrice = price?.stopLoss ?? signal.price_stop_loss;
+  const resolutionPrice = price?.resolution ?? (status === "COMPLETED" ? currentPrice : null);
+
+  // Compute live performance metrics if performance object is not returned by the backend
+  let leveragedReturnPct = performance?.leveragedReturnPct ?? performance?.priceChangePct;
+  let marketMovePct = performance?.marketPriceChangePct;
+
+  if ((leveragedReturnPct === null || leveragedReturnPct === undefined) && entryPrice && currentPrice) {
+    const rawPriceChange = currentPrice - entryPrice;
+    const priceChangePct = (rawPriceChange / entryPrice) * 100;
+    
+    let directionalMultiplier = 0;
+    if (activeType === "BUY") {
+      directionalMultiplier = 1;
+    } else if (activeType === "SELL") {
+      directionalMultiplier = -1;
+    }
+    
+    leveragedReturnPct = priceChangePct * directionalMultiplier * (leverage || 1);
+    marketMovePct = priceChangePct;
+  }
+
+  // Derive actual direction
+  let activeActualDirection = actualDirection || signal.actual_direction;
+  if (!activeActualDirection) {
+    if (status === "ACTIVE") {
+      activeActualDirection = "LIVE";
+    } else if (status === "CANCELLED" || outcome === "CANCELLED") {
+      activeActualDirection = "N/A";
+    } else if (entryPrice && currentPrice) {
+      activeActualDirection = currentPrice > entryPrice ? "UP" : (currentPrice < entryPrice ? "DOWN" : "NEUTRAL");
+    } else {
+      activeActualDirection = "N/A";
+    }
+  }
+
+  // Reconstruct technical indicators from backend features JSON snapshot
+  const activeFeatures = signal.features || {};
+  const activeIndicators = indicators || (activeFeatures && Object.keys(activeFeatures).length > 0 ? {
+    rsi: activeFeatures.momentum?.rsi14,
+    macd: activeFeatures.momentum?.macdLine !== undefined ? {
+      macdLine: activeFeatures.momentum?.macdLine,
+      signalLine: activeFeatures.momentum?.macdSignal,
+      histogram: activeFeatures.momentum?.macdHistogram,
+    } : null,
+    ema: activeFeatures.trend?.ema20,
+    sma: activeFeatures.trend?.sma20,
+    supplyDemand: activeFeatures.structure?.activeZoneBias ? {
+      bias: activeFeatures.structure?.activeZoneBias,
+    } : null,
+    fvg: activeFeatures.structure?.nearestFvgBias ? {
+      bias: activeFeatures.structure?.nearestFvgBias,
+    } : null,
+  } : null);
+
   const mlProbabilityPct =
     ml?.probability === null || ml?.probability === undefined
       ? null
       : ml.probability * 100;
-  const isHoldSignal = type === "HOLD";
+  const isHoldSignal = activeType === "HOLD";
   const holdMlSkipped = isHoldSignal && ml?.predictionSource === "hold_signal_skipped";
   const mlProbabilityLabel = holdMlSkipped
     ? "Not used for HOLD"
@@ -101,16 +169,18 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
         <div>
           <h3 className="text-xl font-bold text-white">{symbol}</h3>
           <span className="text-sm text-gray-400">
-            {marketType || "FUTURES"} | {timeframe} | {leverage || 1}x
+            {activeMarketType} | {timeframe} | {leverage || 1}x
           </span>
         </div>
         <div className="text-right">
           <span
             className={`inline-block px-3 py-1 rounded-full text-sm font-bold border ${signalColorClass}`}
           >
-            {type}
+            {activeType}
           </span>
-          <p className="text-sm text-gray-400 mt-1">{formatDate(createdAt)}</p>
+          <p className="text-sm text-gray-400 mt-1">
+            {activeCreatedAt ? formatDate(activeCreatedAt) : "N/A"}
+          </p>
         </div>
       </div>
 
@@ -170,22 +240,22 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
         <div className="bg-white/5 rounded-lg p-3">
           <p className="text-xs text-gray-400 mb-1">Entry Price</p>
           <p className="text-sm font-semibold text-white">
-            {formatPrice(price?.entry)}
+            {formatPrice(entryPrice)}
           </p>
         </div>
-        {price?.target && (
+        {targetPrice !== null && targetPrice !== undefined && (
           <div className="bg-green-400/10 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-1">Target</p>
             <p className="text-sm font-semibold text-green-400">
-              {formatPrice(price.target)}
+              {formatPrice(targetPrice)}
             </p>
           </div>
         )}
-        {price?.stopLoss && (
+        {stopLossPrice !== null && stopLossPrice !== undefined && (
           <div className="bg-red-400/10 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
             <p className="text-sm font-semibold text-red-400">
-              {formatPrice(price.stopLoss)}
+              {formatPrice(stopLossPrice)}
             </p>
           </div>
         )}
@@ -198,153 +268,151 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
         <div className="bg-white/5 rounded-lg p-3">
           <p className="text-xs text-gray-400 mb-1">Current</p>
           <p className="text-sm font-semibold text-white">
-            {formatPrice(price?.current)}
+            {formatPrice(currentPrice)}
           </p>
         </div>
-        {status === "COMPLETED" && (
+        {(status === "COMPLETED" || resolutionPrice !== null) && (
           <div className="bg-cyan-400/10 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-1">Resolved Price</p>
             <p className="text-sm font-semibold text-cyan-400">
-              {formatPrice(price?.resolution)}
+              {formatPrice(resolutionPrice)}
             </p>
           </div>
         )}
       </div>
 
-      {(status === "COMPLETED" || outcome === "CANCELLED") && (
-        <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-            <div>
-              <p className="text-sm font-semibold text-white">Resolved Outcome</p>
-              <p className="text-xs text-gray-400 mt-1">
-                {resolvedAt ? `Resolved ${formatDate(resolvedAt)}` : "Awaiting resolution timestamp"}
-              </p>
-            </div>
-            <span
-              className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${getOutcomeColor(outcome)}`}
-            >
-              {outcome || "PENDING"}
-            </span>
+      <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.04] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <p className="text-sm font-semibold text-white">Resolved Outcome</p>
+            <p className="text-xs text-gray-400 mt-1">
+              {activeResolvedAt ? `Resolved ${formatDate(activeResolvedAt)}` : "Awaiting resolution timestamp"}
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg bg-white/[0.03] p-3">
-              <p className="text-xs text-gray-400 mb-1">Expected Direction</p>
-              <p className="text-sm font-semibold text-white">
-                {expectedDirection || "N/A"}
-              </p>
-            </div>
-            <div className="rounded-lg bg-white/[0.03] p-3">
-              <p className="text-xs text-gray-400 mb-1">Actual Direction</p>
-              <p className="text-sm font-semibold text-white">
-                {actualDirection || "N/A"}
-              </p>
-            </div>
-            <div className="rounded-lg bg-white/[0.03] p-3">
-              <p className="text-xs text-gray-400 mb-1">Leveraged PnL</p>
-              <p
-                className={`text-sm font-semibold ${
-                  (leveragedReturnPct || 0) >= 0
-                    ? "text-emerald-400"
-                    : "text-red-400"
-                }`}
-              >
-                {formatPercent(leveragedReturnPct)}
-              </p>
-            </div>
-            <div className="rounded-lg bg-white/[0.03] p-3">
-              <p className="text-xs text-gray-400 mb-1">Resolution Source</p>
-              <p className="text-sm font-semibold text-white">
-                {resolutionSource || "Manual"}
-              </p>
-            </div>
-            <div className="rounded-lg bg-white/[0.03] p-3">
-              <p className="text-xs text-gray-400 mb-1">Underlying Move</p>
-              <p className="text-sm font-semibold text-white">
-                {formatPercent(marketMovePct)}
-              </p>
-            </div>
+          <span
+            className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${getOutcomeColor(status === "ACTIVE" ? "PENDING" : outcome)}`}
+          >
+            {status === "ACTIVE" ? "PENDING" : (outcome || "PENDING")}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-white/[0.03] p-3">
+            <p className="text-xs text-gray-400 mb-1">Expected Direction</p>
+            <p className="text-sm font-semibold text-white">
+              {activeExpectedDirection}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] p-3">
+            <p className="text-xs text-gray-400 mb-1">Actual Direction</p>
+            <p className="text-sm font-semibold text-white">
+              {activeActualDirection}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] p-3">
+            <p className="text-xs text-gray-400 mb-1">Leveraged PnL</p>
+            <p
+              className={`text-sm font-semibold ${
+                (leveragedReturnPct || 0) >= 0
+                  ? "text-emerald-400"
+                  : "text-red-400"
+              }`}
+            >
+              {formatPercent(leveragedReturnPct)}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] p-3">
+            <p className="text-xs text-gray-400 mb-1">Resolution Source</p>
+            <p className="text-sm font-semibold text-white">
+              {activeResolutionSource}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] p-3">
+            <p className="text-xs text-gray-400 mb-1">Underlying Move</p>
+            <p className="text-sm font-semibold text-white">
+              {formatPercent(marketMovePct)}
+            </p>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Indicators */}
-      {indicators && (
+      {activeIndicators && (
         <div className="mb-4">
           <h4 className="text-sm font-semibold text-gray-300 mb-2">
             Indicators
           </h4>
           <div className="grid grid-cols-2 gap-2">
-            {indicators.rsi && (
+            {activeIndicators.rsi && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">RSI</span>
                 <p
                   className={`text-sm font-semibold ${
-                    indicators.rsi < 30
+                    activeIndicators.rsi < 30
                       ? "text-green-400"
-                      : indicators.rsi > 70
+                      : activeIndicators.rsi > 70
                         ? "text-red-400"
                         : "text-white"
                   }`}
                 >
-                  {indicators.rsi.toFixed(2)}
+                  {activeIndicators.rsi.toFixed(2)}
                 </p>
               </div>
             )}
-            {indicators.macd && (
+            {activeIndicators.macd && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">MACD</span>
                 <p
                   className={`text-sm font-semibold ${
-                    indicators.macd.histogram > 0
+                    activeIndicators.macd.histogram > 0
                       ? "text-green-400"
                       : "text-red-400"
                   }`}
                 >
-                  {indicators.macd.macdLine.toFixed(4)}
+                  {activeIndicators.macd.macdLine.toFixed(4)}
                 </p>
               </div>
             )}
-            {indicators.ema && (
+            {activeIndicators.ema && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">EMA 20</span>
                 <p className="text-sm font-semibold text-white">
-                  {formatPrice(indicators.ema)}
+                  {formatPrice(activeIndicators.ema)}
                 </p>
               </div>
             )}
-            {indicators.sma && (
+            {activeIndicators.sma && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">SMA 20</span>
                 <p className="text-sm font-semibold text-white">
-                  {formatPrice(indicators.sma)}
+                  {formatPrice(activeIndicators.sma)}
                 </p>
               </div>
             )}
-            {indicators.supplyDemand?.bias && indicators.supplyDemand.bias !== "NONE" && (
+            {activeIndicators.supplyDemand?.bias && activeIndicators.supplyDemand.bias !== "NONE" && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">S/D Bias</span>
                 <p
                   className={`text-sm font-semibold ${
-                    indicators.supplyDemand.bias === "DEMAND"
+                    activeIndicators.supplyDemand.bias === "DEMAND"
                       ? "text-cyan-400"
                       : "text-red-400"
                   }`}
                 >
-                  {indicators.supplyDemand.bias}
+                  {activeIndicators.supplyDemand.bias}
                 </p>
               </div>
             )}
-            {indicators.fvg?.bias && indicators.fvg.bias !== "NONE" && (
+            {activeIndicators.fvg?.bias && activeIndicators.fvg.bias !== "NONE" && (
               <div className="bg-white/5 rounded p-2">
                 <span className="text-xs text-gray-400">FVG Bias</span>
                 <p
                   className={`text-sm font-semibold ${
-                    indicators.fvg.bias === "BULLISH"
+                    activeIndicators.fvg.bias === "BULLISH"
                       ? "text-emerald-400"
                       : "text-orange-400"
                   }`}
                 >
-                  {indicators.fvg.bias}
+                  {activeIndicators.fvg.bias}
                 </p>
               </div>
             )}
@@ -384,13 +452,13 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
         {showActions && status === "ACTIVE" && onUpdateStatus && (
           <div className="flex gap-2">
             <button
-              onClick={() => onUpdateStatus(signal._id, "COMPLETED")}
+              onClick={() => onUpdateStatus(id || _id, "COMPLETED")}
               className="px-3 py-1 bg-green-400/20 text-green-400 rounded hover:bg-green-400/30 text-xs font-medium transition-colors"
             >
               Complete
             </button>
             <button
-              onClick={() => onUpdateStatus(signal._id, "CANCELLED")}
+              onClick={() => onUpdateStatus(id || _id, "CANCELLED")}
               className="px-3 py-1 bg-red-400/20 text-red-400 rounded hover:bg-red-400/30 text-xs font-medium transition-colors"
             >
               Cancel

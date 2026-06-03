@@ -1,0 +1,62 @@
+[project]
+name = "analis-ai-backend"
+version = "2.0.0"
+description = "Analis-AI Signal & Backtesting Backend — Python/FastAPI"
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.18",
+
+    # Database (PostgreSQL + async ORM)
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+
+    # Auth
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.4.0",
+
+    # HTTP client (async — replaces axios)
+    "httpx>=0.28.0",
+
+    # WebSockets (Binance streaming)
+    "websockets>=14.0",
+
+    # Caching (Redis)
+    "redis>=5.2.0",
+
+    # Rate Limiting
+    "slowapi>=0.1.9",
+
+    # ML / Data Science (carried over from ml_service)
+    "pandas>=2.2.0",
+    "pandas_ta>=0.4.71b0",
+    "scikit-learn>=1.6.0",
+    "xgboost>=3.0.0",
+    "joblib>=1.4.0",
+    "numpy>=2.0.0",
+
+    # Settings management
+    "pydantic-settings>=2.7.0",
+
+    # Background task scheduler
+    "apscheduler>=3.10.0",
+
+    # Real-time (Socket.IO — protocol-compatible with frontend socket.io-client)
+    "python-socketio>=5.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx",  # for TestClient
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

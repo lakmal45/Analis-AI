@@ -15,13 +15,12 @@ const Home = lazy(() => import("./pages/Home"));
 const Login = lazy(() => import("./pages/Login"));
 const Register = lazy(() => import("./pages/Register"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Analysis = lazy(() => import("./pages/Analysis"));
 const Watchlist = lazy(() => import("./pages/Watchlist"));
 const Signals = lazy(() => import("./pages/Signals"));
 const Backtesting = lazy(() => import("./pages/Backtesting"));
-const Chat = lazy(() => import("./pages/Chat"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Profile = lazy(() => import("./pages/Profile"));
+const MLSettings = lazy(() => import("./pages/MLSettings"));
 
 // Loading component for Suspense fallback
 const PageLoader = () => (
@@ -53,13 +52,12 @@ function App() {
                   }
                 >
                   <Route path="dashboard" element={<Dashboard />} />
-                  <Route path="analysis" element={<Analysis />} />
                   <Route path="watchlist" element={<Watchlist />} />
                   <Route path="signals" element={<Signals />} />
                   <Route path="backtesting" element={<Backtesting />} />
-                  <Route path="chat" element={<Chat />} />
                   <Route path="settings" element={<Settings />} />
                   <Route path="profile" element={<Profile />} />
+                  <Route path="ml-settings" element={<MLSettings />} />
                   <Route index element={<Navigate to="/app/dashboard" replace />} />
                 </Route>
                 {/* Legacy redirect */}

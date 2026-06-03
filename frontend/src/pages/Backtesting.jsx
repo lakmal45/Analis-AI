@@ -187,7 +187,7 @@ const Backtesting = () => {
 
       try {
         setBacktestHistoryLoading(true);
-        const response = await api.get("/signals/backtest/history", {
+        const response = await api.get("/backtest/history", {
           params: {
             symbol: historySymbol,
             limit: 10,
@@ -244,7 +244,7 @@ const Backtesting = () => {
         return;
       }
 
-      const response = await api.post("/signals/backtest", {
+      const response = await api.post("/backtest", {
         symbol: symbolToTest,
         ...backtestConfig,
       });
@@ -282,7 +282,7 @@ const Backtesting = () => {
 
   const deleteBacktestHistoryItem = async () => {
     const historyItem = pendingDeleteBacktest;
-    const historyRunId = historyItem?.backtestRunId || historyItem?._id;
+    const historyRunId = historyItem?.backtestRunId || historyItem?.id || historyItem?._id;
 
     if (!historyRunId) {
       return;
@@ -292,11 +292,11 @@ const Backtesting = () => {
       setDeletingBacktestRunId(historyRunId);
       setBacktestError(null);
 
-      await api.delete(`/signals/backtest/history/${historyRunId}`);
+      await api.delete(`/backtest/history/${historyRunId}`);
 
       setBacktestHistory((currentHistory) => {
         const nextHistory = currentHistory.filter((item) => {
-          const itemRunId = item.backtestRunId || item._id;
+          const itemRunId = item.backtestRunId || item.id || item._id;
           return itemRunId !== historyRunId;
         });
 
@@ -309,7 +309,7 @@ const Backtesting = () => {
 
         setBacktestResult((currentResult) => {
           const currentRunId =
-            currentResult?.backtestRunId || currentResult?._id || null;
+            currentResult?.backtestRunId || currentResult?.id || currentResult?._id || null;
 
           if (currentRunId !== historyRunId) {
             return currentResult;
@@ -377,7 +377,7 @@ const Backtesting = () => {
     selectedSymbol || watchlistAssets[0]?.symbol || "BTCUSDT",
   );
   const selectedBacktestRunId =
-    backtestResult?.backtestRunId || backtestResult?._id || null;
+    backtestResult?.backtestRunId || backtestResult?.id || backtestResult?._id || null;
   const availableMlModels = mlLifecycle?.registry?.models || [];
   const activeMlModelVersion =
     mlLifecycle?.registry?.activeModelVersion || null;
@@ -389,7 +389,7 @@ const Backtesting = () => {
     ? `/app/signals?symbol=${selectedSymbol}`
     : "/app/signals";
   const pendingDeleteBacktestRunId =
-    pendingDeleteBacktest?.backtestRunId || pendingDeleteBacktest?._id || null;
+    pendingDeleteBacktest?.backtestRunId || pendingDeleteBacktest?.id || pendingDeleteBacktest?._id || null;
   const pendingDeleteSymbolLabel = formatSymbolLabel(
     pendingDeleteBacktest?.symbol || "BTCUSDT",
   );
@@ -1029,7 +1029,7 @@ const Backtesting = () => {
 
         <div className="space-y-3">
           {visibleBacktestHistory.map((item) => {
-            const historyRunId = item.backtestRunId || item._id;
+            const historyRunId = item.backtestRunId || item.id || item._id;
             const isSelected = historyRunId === selectedBacktestRunId;
             const symbolLabel = formatSymbolLabel(item.symbol || "BTCUSDT");
             const isDeleting = deletingBacktestRunId === historyRunId;

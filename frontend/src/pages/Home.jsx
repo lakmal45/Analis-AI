@@ -15,7 +15,7 @@ const Home = () => {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setActiveFeature((prev) => (prev + 1) % 4);
+      setActiveFeature((prev) => (prev + 1) % 3);
     }, 3500);
     return () => clearInterval(interval);
   }, []);
@@ -77,25 +77,6 @@ const Home = () => {
       ),
       title: "Portfolio Security",
       desc: "Enterprise-grade encryption and risk management tools to protect your assets.",
-    },
-    {
-      icon: (
-        <svg
-          className="w-7 h-7"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={1.5}
-            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-          />
-        </svg>
-      ),
-      title: "AI Chat Assistant",
-      desc: "Ask our AI anything about markets, strategies, or portfolio optimization.",
     },
   ];
 
@@ -306,18 +287,16 @@ const Home = () => {
               <div
                 key={i}
                 onMouseEnter={() => setActiveFeature(i)}
-                className={`group relative p-6 rounded-2xl border transition-all duration-500 cursor-default ${
-                  activeFeature === i
+                className={`group relative p-6 rounded-2xl border transition-all duration-500 cursor-default ${activeFeature === i
                     ? "bg-gradient-to-br from-blue-600/10 to-violet-600/10 border-blue-500/30 shadow-lg shadow-blue-500/10"
                     : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.12]"
-                }`}
+                  }`}
               >
                 <div
-                  className={`w-12 h-12 rounded-xl flex items-center justify-center mb-4 transition-all duration-500 ${
-                    activeFeature === i
+                  className={`w-12 h-12 rounded-xl flex items-center justify-center mb-4 transition-all duration-500 ${activeFeature === i
                       ? "bg-gradient-to-br from-blue-500 to-violet-600 text-white shadow-lg shadow-blue-500/30"
                       : "bg-white/[0.06] text-gray-400 group-hover:text-white"
-                  }`}
+                    }`}
                 >
                   {f.icon}
                 </div>
