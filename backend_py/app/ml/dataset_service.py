@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal
 from app.models.signal import Signal
 from app.models.backtest_run import BacktestRun
+from app.ml.feature_registry import flatten_feature_snapshot
 from app.ml.feature_schema import FEATURE_COLUMNS
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,12 @@ async def export_training_dataset(
                         "label": 1 if sig.outcome == "WIN" else 0,
                         "source": "live_signal"
                     }
+                    flattened_features = flatten_feature_snapshot(sig.features)
+                    flattened_features["context.signalType"] = sig.signal_type
                     for feature in FEATURE_COLUMNS:
-                        row[feature] = sig.features.get(feature, 0)
+                        if feature == "type" and "type" in row:
+                            continue
+                        row[feature] = flattened_features.get(feature, 0)
                     rows.append(row)
 
             # 2. Extract from Backtest Runs
@@ -130,8 +135,12 @@ async def export_training_dataset(
                             "label": 1 if outcome == "WIN" else 0,
                             "source": "backtest"
                         }
+                        flattened_features = flatten_feature_snapshot(features)
+                        flattened_features["context.signalType"] = trade.get("type")
                         for feature in FEATURE_COLUMNS:
-                            row[feature] = features.get(feature, 0)
+                            if feature == "type" and "type" in row:
+                                continue
+                            row[feature] = flattened_features.get(feature, 0)
                         rows.append(row)
 
         if len(rows) < min_signals:

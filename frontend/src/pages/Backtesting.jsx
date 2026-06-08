@@ -84,6 +84,7 @@ const Backtesting = () => {
   const [watchlistLoading, setWatchlistLoading] = useState(true);
   const [mlLifecycle, setMlLifecycle] = useState(null);
   const [mlLifecycleLoading, setMlLifecycleLoading] = useState(true);
+  const [signalConfig, setSignalConfig] = useState(null);
   const historyRef = useRef(null);
   const resultRef = useRef(null);
   const [backtestConfig, setBacktestConfig] = useState({
@@ -101,6 +102,8 @@ const Backtesting = () => {
     intrabarPolicy: "conservative",
     backtestMlModel: "off",
     applyAccuracyGuardrails: false,
+    preset: "balanced",
+    validationMode: "rules_only",
   });
 
   useEffect(() => {
@@ -148,10 +151,24 @@ const Backtesting = () => {
       setMlLifecycleLoading(true);
       const response = await api.get("/ai/ml/lifecycle");
       const lifecycle = response.data?.data || null;
-      setMlLifecycle(lifecycle);
+      const normalizedLifecycle = lifecycle
+        ? {
+            ...lifecycle,
+            registry: lifecycle.registry || {
+              activeModelVersion: lifecycle.activeModelVersion,
+              models: lifecycle.models || [],
+            },
+            latestTraining:
+              lifecycle.latestTraining ||
+              (lifecycle.lastTrainingRun
+                ? { latestTraining: lifecycle.lastTrainingRun }
+                : null),
+          }
+        : null;
+      setMlLifecycle(normalizedLifecycle);
 
       const activeModelVersion =
-        lifecycle?.registry?.activeModelVersion || "off";
+        normalizedLifecycle?.registry?.activeModelVersion || "off";
       setBacktestConfig((current) => ({
         ...current,
         backtestMlModel:
@@ -170,6 +187,20 @@ const Backtesting = () => {
   useEffect(() => {
     fetchMlLifecycle();
   }, [fetchMlLifecycle]);
+
+  useEffect(() => {
+    const fetchSignalConfig = async () => {
+      try {
+        const response = await api.get("/signals/config");
+        const config = response.data?.data || null;
+        setSignalConfig(config);
+      } catch (err) {
+        console.error("Error fetching signal config:", err);
+      }
+    };
+
+    fetchSignalConfig();
+  }, []);
 
   const fetchBacktestHistory = useCallback(
     async (symbolOverride, options = {}) => {
@@ -406,7 +437,7 @@ const Backtesting = () => {
   const selectedModel = availableMlModels.find(
     (m) => m.modelVersion === backtestConfig.backtestMlModel
   );
-
+  const availablePresets = Object.values(signalConfig?.presets || {});
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -623,7 +654,7 @@ const Backtesting = () => {
               />
             </label>
 
-            <label className="block">
+            <label className="block" title="Calculated dynamically by the backtesting engine based on market regime">
               <span className="mb-2 block text-sm text-gray-400">
                 ATR Target
               </span>
@@ -640,11 +671,12 @@ const Backtesting = () => {
                       Number(e.target.value) || DEFAULT_ATR_TARGET_MULTIPLIER,
                   }))
                 }
-                className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+                disabled
+                className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </label>
 
-            <label className="block">
+            <label className="block" title="Calculated dynamically by the backtesting engine based on market regime">
               <span className="mb-2 block text-sm text-gray-400">ATR Stop</span>
               <input
                 type="number"
@@ -659,7 +691,8 @@ const Backtesting = () => {
                       Number(e.target.value) || DEFAULT_ATR_STOP_MULTIPLIER,
                   }))
                 }
-                className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+                disabled
+                className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </label>
 
@@ -693,6 +726,37 @@ const Backtesting = () => {
                 ))}
               </select>
             </label>
+
+            <label className="block">
+              <span className="mb-2 block text-sm text-gray-400">Rule Preset</span>
+              <select
+                value={backtestConfig.preset}
+                onChange={(e) =>
+                  setBacktestConfig((current) => ({
+                    ...current,
+                    preset: e.target.value,
+                  }))
+                }
+                className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+              >
+                {availablePresets.length === 0 ? (
+                  <option value="balanced" className="bg-gray-800 text-white">
+                    Balanced
+                  </option>
+                ) : (
+                  availablePresets.map((preset) => (
+                    <option
+                      key={preset.id}
+                      value={preset.id}
+                      className="bg-gray-800 text-white"
+                    >
+                      {preset.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+
 
             <label className="block">
               <span className="mb-2 block text-sm text-gray-400">
@@ -754,6 +818,11 @@ const Backtesting = () => {
             <span className="font-medium text-white">
               {backtestConfig.backtestMlModel || "off"}
             </span>{" "}
+            with{" "}
+            <span className="font-medium text-white">
+              {backtestConfig.preset.replaceAll("_", " ")}
+            </span>{" "}
+            preset,{" "}
             using{" "}
             <span className="font-medium text-white">
               {backtestConfig.atrTargetMultiplier}/
@@ -933,6 +1002,18 @@ const Backtesting = () => {
                 <p className="mb-1 text-gray-500">ML Model for Backtesting</p>
                 <p className="font-medium text-white">
                   {backtestResult.config.mlModel || "off"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="mb-1 text-gray-500">Rule Preset</p>
+                <p className="font-medium capitalize text-white">
+                  {(backtestResult.config.preset || "balanced").replaceAll("_", " ")}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="mb-1 text-gray-500">Validation Mode</p>
+                <p className="font-medium capitalize text-white">
+                  {(backtestResult.config.validationMode || "rules_only").replaceAll("_", " ")}
                 </p>
               </div>
               <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">

@@ -9,12 +9,15 @@ const MLSettings = () => {
   const [mlMsg, setMlMsg] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
   const [models, setModels] = useState({ models: [], activeModelVersion: null });
+  const [quality, setQuality] = useState(null);
+  const [drift, setDrift] = useState(null);
+  const [normalization, setNormalization] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
+  const [qualityLoading, setQualityLoading] = useState(true);
   const [extractParams, setExtractParams] = useState({ min_signals: 60, source: "combined" });
   const [trainParams, setTrainParams] = useState({ dataset_path: "app/ml/data/training-data.csv", notes: "" });
-
-  useEffect(() => {
-    fetchModels();
-  }, []);
+  const [deleteFilter, setDeleteFilter] = useState({ symbol: "", timeframe: "" });
+  const [watchlistCoins, setWatchlistCoins] = useState([]);
 
   const fetchModels = async () => {
     try {
@@ -26,6 +29,55 @@ const MLSettings = () => {
       console.error("Failed to fetch models:", error);
     }
   };
+
+  const fetchMlQuality = async () => {
+    try {
+      setQualityLoading(true);
+      const [qualityRes, driftRes, normalizationRes, analyticsRes] =
+        await Promise.allSettled([
+          api.get("/ml/quality"),
+          api.get("/ml/drift"),
+          api.get("/ml/normalization"),
+          api.get("/ml/analytics"),
+        ]);
+
+      if (qualityRes.status === "fulfilled") {
+        setQuality(qualityRes.value.data?.data || null);
+      }
+      if (driftRes.status === "fulfilled") {
+        setDrift(driftRes.value.data?.data || null);
+      }
+      if (normalizationRes.status === "fulfilled") {
+        setNormalization(normalizationRes.value.data?.data || null);
+      }
+      if (analyticsRes.status === "fulfilled") {
+        setAnalytics(analyticsRes.value.data?.data || null);
+      }
+    } catch (error) {
+      console.error("Failed to fetch ML quality:", error);
+    } finally {
+      setQualityLoading(false);
+    }
+  };
+
+  const fetchWatchlist = async () => {
+    try {
+      const res = await api.get("/watchlist");
+      if (res.data && res.data.assets) {
+        setWatchlistCoins(res.data.assets.map(a => a.symbol));
+      }
+    } catch (error) {
+      console.error("Failed to fetch watchlist:", error);
+    }
+  };
+
+  useEffect(() => {
+    Promise.resolve().then(() => {
+      fetchModels();
+      fetchMlQuality();
+      fetchWatchlist();
+    });
+  }, []);
 
   // ML Handlers
   const showMlMsg = (msg, isError = false) => {
@@ -51,6 +103,7 @@ const MLSettings = () => {
       const res = await api.post("/ml/train", trainParams);
       showMlMsg(`Training successful! Model: ${res.data.data.modelVersion}. Promoted: ${res.data.data.promotion?.eligible}`);
       fetchModels();
+      fetchMlQuality();
     } catch (error) {
       showMlMsg(`Training failed: ${error.response?.data?.detail || error.message}`, true);
     } finally {
@@ -76,6 +129,7 @@ const MLSettings = () => {
       await api.post("/ml/models/activate", { version });
       showMlMsg(`Activated model: ${version}`);
       fetchModels();
+      fetchMlQuality();
     } catch (error) {
       showMlMsg(`Failed to activate: ${error.response?.data?.detail || error.message}`, true);
     } finally {
@@ -90,12 +144,31 @@ const MLSettings = () => {
       await api.delete(`/ml/models/${version}`);
       showMlMsg(`Deleted model: ${version}`);
       fetchModels();
+      fetchMlQuality();
     } catch (error) {
       showMlMsg(`Failed to delete: ${error.response?.data?.detail || error.message}`, true);
     } finally {
       setMlLoading(false);
     }
   };
+
+  const formatPercent = (value) => `${((value || 0)).toFixed(1)}%`;
+  const qualityStatus = quality?.quality?.status || "unavailable";
+  const driftStatus = drift?.drift?.status || "unavailable";
+  const qualityTone =
+    qualityStatus === "healthy"
+      ? "text-green-400"
+      : qualityStatus === "degraded"
+        ? "text-yellow-400"
+        : "text-red-400";
+  const driftTone =
+    driftStatus === "low"
+      ? "text-green-400"
+      : driftStatus === "medium"
+        ? "text-yellow-400"
+        : driftStatus === "high"
+          ? "text-red-400"
+          : "text-gray-400";
 
   const handleDeleteAllBacktests = async () => {
     if (!window.confirm("WARNING: Are you sure you want to delete ALL backtest runs? This action cannot be undone.")) return;
@@ -105,6 +178,31 @@ const MLSettings = () => {
       setSaveMsg("All backtest data deleted successfully!");
     } catch (error) {
       setSaveMsg(`Failed to delete backtest data: ${error.response?.data?.detail || error.message}`);
+    } finally {
+      setDataLoading(false);
+      setTimeout(() => setSaveMsg(""), 5000);
+    }
+  };
+
+  const handleDeleteSelectiveBacktests = async () => {
+    if (!deleteFilter.symbol && !deleteFilter.timeframe) {
+      setSaveMsg("Please provide at least a symbol or timeframe to delete.");
+      return;
+    }
+    
+    if (!window.confirm(`WARNING: Are you sure you want to delete backtest runs matching ${deleteFilter.symbol || "any"} symbol and ${deleteFilter.timeframe || "any"} timeframe? This action cannot be undone.`)) return;
+    
+    try {
+      setDataLoading(true);
+      const params = new URLSearchParams();
+      if (deleteFilter.symbol) params.append("symbol", deleteFilter.symbol);
+      if (deleteFilter.timeframe) params.append("timeframe", deleteFilter.timeframe);
+      
+      const res = await api.delete(`/backtest/history/filter?${params.toString()}`);
+      setSaveMsg(res.data?.message || "Filtered backtest data deleted successfully!");
+      setDeleteFilter({ symbol: "", timeframe: "" });
+    } catch (error) {
+      setSaveMsg(`Failed to delete filtered backtest data: ${error.response?.data?.detail || error.message}`);
     } finally {
       setDataLoading(false);
       setTimeout(() => setSaveMsg(""), 5000);
@@ -147,6 +245,261 @@ const MLSettings = () => {
         </div>
       )}
 
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
+        <GlassCard className="p-5">
+          <p className="mb-2 text-sm text-gray-400">Model Quality</p>
+          <p className={`text-2xl font-bold capitalize ${qualityTone}`}>
+            {qualityLoading ? "Loading" : qualityStatus}
+          </p>
+          <p className="mt-2 break-all text-xs text-gray-500">
+            {quality?.activeModelVersion || "No active model"}
+          </p>
+        </GlassCard>
+
+        <GlassCard className="p-5">
+          <p className="mb-2 text-sm text-gray-400">Feature Drift</p>
+          <p className={`text-2xl font-bold capitalize ${driftTone}`}>
+            {qualityLoading ? "Loading" : driftStatus}
+          </p>
+          <p className="mt-2 text-xs text-gray-500">
+            {drift?.currentWindow?.rowCount || 0} recent feature rows
+          </p>
+        </GlassCard>
+
+        <GlassCard className="p-5">
+          <p className="mb-2 text-sm text-gray-400">Normalized Coverage</p>
+          <p className="text-2xl font-bold text-cyan-400">
+            {formatPercent((normalization?.normalizedCoverageRate || 0) * 100)}
+          </p>
+          <p className="mt-2 text-xs text-gray-500">
+            {normalization?.normalizedFeatureCount || 0} of{" "}
+            {normalization?.featureCount || 0} features
+          </p>
+        </GlassCard>
+
+        <GlassCard className="p-5">
+          <p className="mb-2 text-sm text-gray-400">ML Coverage</p>
+          <p className="text-2xl font-bold text-emerald-400">
+            {formatPercent(analytics?.mlCoverage?.coverageRate || 0)}
+          </p>
+          <p className="mt-2 text-xs text-gray-500">
+            Avg probability{" "}
+            {formatPercent(analytics?.mlCoverage?.averageProbabilityPct || 0)}
+          </p>
+        </GlassCard>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <GlassCard className="p-6 xl:col-span-2">
+          <div className="mb-5 flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-white">
+                Quality Gates And Drift
+              </h2>
+              <p className="mt-1 text-sm text-gray-400">
+                Active model health, promotion thresholds, and the largest
+                feature-distribution changes in recent signals.
+              </p>
+            </div>
+            <button
+              onClick={fetchMlQuality}
+              disabled={qualityLoading}
+              className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-gray-200 transition-colors hover:bg-white/10 disabled:opacity-60"
+            >
+              {qualityLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-3 font-semibold text-white">Quality Reasons</p>
+              <div className="space-y-2 text-sm text-gray-400">
+                {(quality?.quality?.reasons || []).map((reason) => (
+                  <p key={reason}>{reason}</p>
+                ))}
+                {(!quality?.quality?.reasons ||
+                  quality.quality.reasons.length === 0) && (
+                  <p>No blocking quality reasons reported.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-3 font-semibold text-white">Thresholds</p>
+              <div className="grid grid-cols-1 gap-3 text-sm 2xl:grid-cols-2">
+                <div className="rounded-lg bg-white/[0.03] p-3">
+                  <p className="mb-2 text-gray-500">ROC AUC (Holdout)</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Value: <span className="font-semibold text-white">{quality?.quality?.metrics?.rocAuc !== undefined && quality?.quality?.metrics?.rocAuc !== null ? quality.quality.metrics.rocAuc.toFixed(4) : "N/A"}</span>
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Min: <span className="text-white">{quality?.quality?.thresholds?.minRocAuc ?? "0.58"}</span>
+                      </p>
+                    </div>
+                    <div className="text-xs font-medium">
+                      {quality?.quality?.metrics?.rocAuc !== undefined && quality?.quality?.metrics?.rocAuc !== null
+                        ? quality.quality.metrics.rocAuc >= (quality?.quality?.thresholds?.minRocAuc || 0.58)
+                          ? "✅ PASS"
+                          : "❌ FAILING"
+                        : "N/A"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-white/[0.03] p-3">
+                  <p className="mb-2 text-gray-500">ROC AUC (Walk-Forward)</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Value: <span className="font-semibold text-white">{quality?.quality?.metrics?.walkForward?.rocAucMean !== undefined && quality?.quality?.metrics?.walkForward?.rocAucMean !== null ? quality.quality.metrics.walkForward.rocAucMean.toFixed(4) : "N/A"}</span>
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Min: <span className="text-white">{quality?.quality?.thresholds?.minWalkForwardRocAuc ?? "0.56"}</span>
+                      </p>
+                    </div>
+                    <div className="text-xs font-medium">
+                      {quality?.quality?.metrics?.walkForward?.rocAucMean !== undefined && quality?.quality?.metrics?.walkForward?.rocAucMean !== null
+                        ? quality.quality.metrics.walkForward.rocAucMean >= (quality?.quality?.thresholds?.minWalkForwardRocAuc || 0.56)
+                          ? "✅ PASS"
+                          : "❌ FAILING"
+                        : "N/A"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-white/[0.03] p-3">
+                  <p className="mb-2 text-gray-500">Brier Score</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Value: <span className="font-semibold text-white">{quality?.quality?.metrics?.brierScore !== undefined && quality?.quality?.metrics?.brierScore !== null ? quality.quality.metrics.brierScore.toFixed(4) : "N/A"}</span>
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Max: <span className="text-white">{quality?.quality?.thresholds?.maxBrierScore ?? "0.25"}</span>
+                      </p>
+                    </div>
+                    <div className="text-xs font-medium">
+                      {quality?.quality?.metrics?.brierScore !== undefined && quality?.quality?.metrics?.brierScore !== null
+                        ? quality.quality.metrics.brierScore <= (quality?.quality?.thresholds?.maxBrierScore || 0.25)
+                          ? "✅ PASS"
+                          : "❌ FAILING"
+                        : "N/A"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-white/[0.03] p-3">
+                  <p className="mb-2 text-gray-500">Dataset Rows</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Value: <span className="font-semibold text-white">{quality?.quality?.metrics?.datasetRows ?? "N/A"}</span>
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Min: <span className="text-white">{quality?.quality?.thresholds?.minDatasetRows ?? "6000"}</span>
+                      </p>
+                    </div>
+                    <div className="text-xs font-medium">
+                      {quality?.quality?.metrics?.datasetRows !== undefined && quality?.quality?.metrics?.datasetRows !== null
+                        ? quality.quality.metrics.datasetRows >= (quality?.quality?.thresholds?.minDatasetRows || 6000)
+                          ? "✅ PASS"
+                          : "❌ FAILING"
+                        : "N/A"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 overflow-x-auto rounded-xl border border-white/10 bg-white/[0.02]">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-white/10 text-gray-400">
+                  <th className="px-4 py-3 font-medium">Feature</th>
+                  <th className="px-4 py-3 font-medium">Severity</th>
+                  <th className="px-4 py-3 font-medium">Distance</th>
+                  <th className="px-4 py-3 font-medium">Train Mean</th>
+                  <th className="px-4 py-3 font-medium">Current Mean</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(drift?.drift?.features || []).slice(0, 8).map((feature) => (
+                  <tr key={feature.feature} className="border-b border-white/5">
+                    <td className="px-4 py-3 font-mono text-xs text-gray-300">
+                      {feature.feature}
+                    </td>
+                    <td className="px-4 py-3 capitalize text-gray-300">
+                      {feature.severity}
+                    </td>
+                    <td className="px-4 py-3 text-white">
+                      {feature.standardizedMeanDifference?.toFixed?.(3) ||
+                        "N/A"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {feature.referenceMean?.toFixed?.(3) || "N/A"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {feature.currentMean?.toFixed?.(3) || "N/A"}
+                    </td>
+                  </tr>
+                ))}
+                {(!drift?.drift?.features || drift.drift.features.length === 0) && (
+                  <tr>
+                    <td className="px-4 py-8 text-center text-gray-500" colSpan="5">
+                      No drift comparison available yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-6">
+          <h2 className="mb-5 text-xl font-semibold text-white">
+            Normalization And Analytics
+          </h2>
+          <div className="space-y-4 text-sm">
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-1 text-gray-500">Feature Method</p>
+              <p className="font-medium text-white">
+                {normalization?.method?.replaceAll("_", " ") || "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-1 text-gray-500">Imputation</p>
+              <p className="font-medium text-white">
+                {normalization?.imputation?.replaceAll("_", " ") || "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-1 text-gray-500">Window Win Rate</p>
+              <p className="font-medium text-green-400">
+                {formatPercent(analytics?.outcomes?.winRate || 0)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+              <p className="mb-1 text-gray-500">Model Versions Seen</p>
+              <div className="mt-2 space-y-2">
+                {Object.entries(analytics?.mlCoverage?.modelVersions || {})
+                  .slice(0, 5)
+                  .map(([version, count]) => (
+                    <div key={version} className="flex justify-between gap-3">
+                      <span className="break-all text-gray-300">{version}</span>
+                      <span className="text-white">{count}</span>
+                    </div>
+                  ))}
+                {Object.keys(analytics?.mlCoverage?.modelVersions || {}).length ===
+                  0 && <p className="text-gray-500">No ML predictions yet.</p>}
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+      </div>
+
       {/* --- Machine Learning Dashboard --- */}
       <GlassCard className="p-6">
         <div className="mb-5">
@@ -168,7 +521,7 @@ const MLSettings = () => {
             
             <div className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-2">Minimum Signals</label>
+                <label className="block text-sm text-gray-400 mb-2">Minimum Signals (type 0 to extract all signals)</label>
                 <input 
                   type="number" 
                   value={extractParams.min_signals}
@@ -377,6 +730,59 @@ const MLSettings = () => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
                   Delete All Data
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-red-500/5 p-5 rounded-xl border border-red-500/10">
+            <div className="flex-1">
+              <p className="font-semibold text-gray-200">Delete Selective Backtest Data</p>
+              <p className="text-sm text-gray-400 mt-1 mb-3">
+                Remove backtest runs matching a specific coin or time frame.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  placeholder="Coin (e.g. BTC/USDT)"
+                  list="watchlist-coins"
+                  value={deleteFilter.symbol}
+                  onChange={(e) => setDeleteFilter({ ...deleteFilter, symbol: e.target.value.toUpperCase() })}
+                  className="rounded-lg border border-white/20 bg-gray-800 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50"
+                />
+                <datalist id="watchlist-coins">
+                  {watchlistCoins.map(coin => (
+                    <option key={coin} value={coin} />
+                  ))}
+                </datalist>
+                <select
+                  value={deleteFilter.timeframe}
+                  onChange={(e) => setDeleteFilter({ ...deleteFilter, timeframe: e.target.value })}
+                  className="rounded-lg border border-white/20 bg-gray-800 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50"
+                >
+                  <option value="">Any Timeframe</option>
+                  <option value="1m">1m</option>
+                  <option value="3m">3m</option>
+                  <option value="5m">5m</option>
+                  <option value="15m">15m</option>
+                  <option value="30m">30m</option>
+                  <option value="1h">1h</option>
+                  <option value="4h">4h</option>
+                  <option value="1d">1d</option>
+                </select>
+              </div>
+            </div>
+            <button
+              onClick={handleDeleteSelectiveBacktests}
+              disabled={dataLoading || (!deleteFilter.symbol && !deleteFilter.timeframe)}
+              className="shrink-0 rounded-lg border border-red-400/30 bg-red-500/90 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-70 whitespace-nowrap flex items-center gap-2 mt-4 sm:mt-0"
+            >
+              {dataLoading ? "Processing..." : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete Selected
                 </>
               )}
             </button>

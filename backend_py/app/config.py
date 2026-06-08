@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     default_fees_per_trade_pct: float = 0.04
     max_concurrent_signals: int = 5
     min_signal_quality: int = 40
+    signal_threshold_ratio: float = 0.35
     cooldown_loss_streak_threshold: int = 3
     default_futures_leverage: int = 10
 

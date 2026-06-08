@@ -9,7 +9,7 @@ from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.schemas.market import MarketOverviewResponse
-from app.services.market_service import get_klines, get_market_overview, get_price
+from app.services.market_service import get_klines, get_market_overview, get_price, get_all_symbols
 
 router = APIRouter(prefix="/api/market", tags=["Market"])
 
@@ -57,5 +57,8 @@ async def get_symbols(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Any:
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT", "MATICUSDT"]
-    return [{"symbol": s, "baseAsset": s.replace("USDT", ""), "quoteAsset": "USDT"} for s in symbols]
+    try:
+        symbols = await get_all_symbols()
+        return symbols
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

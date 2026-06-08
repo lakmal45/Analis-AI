@@ -125,3 +125,37 @@ async def get_market_overview() -> dict[str, Any]:
     except Exception as exc:
         logger.error(f"Failed to fetch market overview: {exc}")
         raise
+
+async def get_all_symbols() -> list[dict[str, Any]]:
+    """
+    Fetch all trading USDT pairs from Binance Futures exchange info.
+    Caches the result for 1 hour.
+    """
+    cache_key = "all_binance_symbols"
+    redis = await get_redis()
+    
+    cached = await redis.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+            response.raise_for_status()
+            data = response.json()
+            
+        symbols = data.get("symbols", [])
+        usdt_pairs = [
+            {
+                "symbol": s["symbol"],
+                "baseAsset": s["baseAsset"],
+                "quoteAsset": s["quoteAsset"]
+            }
+            for s in symbols if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+        ]
+        
+        await redis.setex(cache_key, 3600, json.dumps(usdt_pairs))
+        return usdt_pairs
+    except Exception as exc:
+        logger.error(f"Failed to fetch exchange info: {exc}")
+        return []

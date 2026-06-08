@@ -221,6 +221,12 @@ const SignalCard = memo(({ signal, onUpdateStatus, showActions = true }) => {
             </p>
           </div>
           <div className="bg-white/5 rounded-lg p-3">
+            <p className="text-xs text-gray-400 mb-1">Predicted Direction</p>
+            <p className={`text-sm font-semibold ${ml?.predictedDirection === 'WIN' ? 'text-green-400' : ml?.predictedDirection === 'LOSS' ? 'text-red-400' : 'text-white'}`}>
+              {holdMlSkipped ? "Not used for HOLD" : ml?.predictedDirection || "N/A"}
+            </p>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-1">ML Status</p>
             <p className="text-sm font-semibold text-white">
               {mlStatusLabel}

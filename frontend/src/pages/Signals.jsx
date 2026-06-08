@@ -6,7 +6,7 @@ import api from "../api/api";
 
 const DEFAULT_LEVERAGE = 10;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
-const STATUS_FILTERS = ["ACTIVE", "ALL", "COMPLETED", "CANCELLED"];
+const STATUS_FILTERS = ["ACTIVE", "SHADOW", "ALL", "COMPLETED", "CANCELLED"];
 
 const formatSymbolLabel = (symbol) => symbol.replace("USDT", "");
 
@@ -27,6 +27,10 @@ const Signals = () => {
   const [generating, setGenerating] = useState(false);
   const [signalTimeframe, setSignalTimeframe] = useState("1h");
   const [signalLeverage, setSignalLeverage] = useState(DEFAULT_LEVERAGE);
+  const [signalConfig, setSignalConfig] = useState(null);
+  const [signalPreset, setSignalPreset] = useState("balanced");
+  const [validationMode, setValidationMode] = useState("full_live_like");
+  const [shadowMode, setShadowMode] = useState(false);
   const [searchParams] = useSearchParams();
 
   useEffect(() => {
@@ -68,6 +72,21 @@ const Signals = () => {
   useEffect(() => {
     fetchWatchlist();
   }, [fetchWatchlist]);
+
+  useEffect(() => {
+    const fetchSignalConfig = async () => {
+      try {
+        const response = await api.get("/signals/config");
+        const config = response.data?.data || null;
+        setSignalConfig(config);
+        setValidationMode(config?.validationModes?.liveDefault || "full_live_like");
+      } catch (err) {
+        console.error("Error fetching signal config:", err);
+      }
+    };
+
+    fetchSignalConfig();
+  }, []);
 
   const fetchSignalSummary = useCallback(async () => {
     try {
@@ -133,10 +152,13 @@ const Signals = () => {
         symbol: symbol.toUpperCase(),
         timeframe: signalTimeframe,
         leverage: signalLeverage,
+        preset: signalPreset,
+        validationMode,
+        shadowMode,
       });
       const generatedSignal = response.data.data;
       alert(
-        `Futures signal generated: ${generatedSignal.signal_type || generatedSignal.type} at ${generatedSignal.leverage}x with ${generatedSignal.confidence}% final confidence${generatedSignal.ml?.probability !== null && generatedSignal.ml?.probability !== undefined ? ` (${(generatedSignal.ml.probability * 100).toFixed(1)}% ML win probability)` : ""}`,
+        `${generatedSignal.status === "SHADOW" ? "Shadow " : ""}futures signal generated: ${generatedSignal.signal_type || generatedSignal.type} at ${generatedSignal.leverage}x with ${generatedSignal.confidence}% final confidence${generatedSignal.ml?.probability !== null && generatedSignal.ml?.probability !== undefined ? ` (${(generatedSignal.ml.probability * 100).toFixed(1)}% ML win probability)` : ""}`,
       );
       await fetchSignals();
       await fetchSignalSummary();
@@ -188,6 +210,13 @@ const Signals = () => {
   const backtestingHref = selectedSymbol
     ? `/app/backtesting?symbol=${selectedSymbol}`
     : "/app/backtesting";
+  const availablePresets = Object.values(signalConfig?.presets || {});
+  const availableValidationModes =
+    signalConfig?.validationModes?.available || [
+      "rules_only",
+      "rules_plus_ml",
+      "full_live_like",
+    ];
 
   return (
     <div className="space-y-6">
@@ -281,6 +310,66 @@ const Signals = () => {
               aria-label="Signal leverage"
               title="Signal leverage"
             />
+          </label>
+
+          <label className="block w-full lg:w-48">
+            <span className="mb-2 block text-sm text-gray-400">Rule Preset</span>
+            <select
+              value={signalPreset}
+              onChange={(e) => setSignalPreset(e.target.value)}
+              className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {availablePresets.length === 0 ? (
+                <option value="balanced" className="bg-gray-800 text-white">
+                  Balanced
+                </option>
+              ) : (
+                availablePresets.map((preset) => (
+                  <option
+                    key={preset.id}
+                    value={preset.id}
+                    className="bg-gray-800 text-white"
+                  >
+                    {preset.label}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+
+          <label className="block w-full lg:w-48">
+            <span className="mb-2 block text-sm text-gray-400">
+              Validation
+            </span>
+            <select
+              value={validationMode}
+              onChange={(e) => setValidationMode(e.target.value)}
+              className="w-full rounded-lg border border-white/20 bg-gray-800 px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {availableValidationModes.map((mode) => (
+                <option key={mode} value={mode} className="bg-gray-800 text-white">
+                  {mode.replaceAll("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block w-full lg:w-36">
+            <span className="mb-2 block text-sm text-gray-400">Shadow</span>
+            <div className="flex h-[42px] items-center rounded-lg border border-white/20 bg-gray-800 px-4">
+              <input
+                type="checkbox"
+                checked={shadowMode}
+                onChange={(e) => setShadowMode(e.target.checked)}
+                className="h-4 w-4 cursor-pointer rounded border-white/20 bg-gray-900 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+              />
+              <span
+                className="ml-2 cursor-pointer text-sm text-white"
+                onClick={() => setShadowMode((current) => !current)}
+              >
+                Enabled
+              </span>
+            </div>
           </label>
 
           <button

@@ -1056,7 +1056,7 @@ Output:
 - nested feature snapshot.
 - `featureVersion = v4_lorentzian`.
 - generated timestamp.
-- `source = pandas_ta`.
+- `source = native_mixed` because the snapshot combines `pandas_ta` outputs with custom derived, structural, candle, kernel, and Lorentzian features.
 
 The feature builder normalizes candles into a pandas DataFrame, converts OHLCV columns to numeric values, computes indicators with `pandas_ta`, calculates custom structural features, calculates kernel regression values, and calculates Lorentzian nearest-neighbor pattern features.
 

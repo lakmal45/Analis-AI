@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,13 @@ from app.middleware.auth import get_current_user
 from app.models.user import User
 
 from app.ml.dataset_service import export_training_dataset
+from app.ml.feature_registry import FEATURE_COUNT, feature_inventory
+from app.ml.quality import (
+    build_drift_report,
+    build_ml_signal_analytics,
+    build_model_quality_report,
+    build_normalization_report,
+)
 from app.ml.training import train_model
 from app.ml.model_store import list_models, activate_model, delete_model, save_bundle
 from app.tasks.ml_retraining import retrain_ml_model
@@ -27,6 +34,22 @@ class TrainRequest(BaseModel):
 
 class ActivateRequest(BaseModel):
     version: str
+
+
+@router.get("/features/inventory")
+async def get_feature_inventory(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Any:
+    return {
+        "success": True,
+        "data": {
+            "featureVersion": "v4_lorentzian",
+            "featureCount": FEATURE_COUNT,
+            "source": "native_mixed",
+            "features": feature_inventory(),
+        },
+    }
 
 
 @router.post("/extract")
@@ -58,6 +81,9 @@ async def run_training(
             "message": f"Model trained successfully. Promoted to active: {eligible}"
         }
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"DEBUG EXCEPTION: {repr(exc)}")
         raise HTTPException(status_code=400, detail=f"Training failed: {str(exc)}")
 
 
@@ -79,6 +105,40 @@ async def get_models(
 ) -> Any:
     registry = list_models()
     return {"success": True, "data": registry}
+
+
+@router.get("/quality")
+async def get_ml_quality(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Any:
+    return {"success": True, "data": build_model_quality_report()}
+
+
+@router.get("/normalization")
+async def get_ml_normalization(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Any:
+    return {"success": True, "data": build_normalization_report()}
+
+
+@router.get("/drift")
+async def get_ml_drift(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    limit: int = Query(200, ge=20, le=1000),
+) -> Any:
+    return {"success": True, "data": await build_drift_report(db, user_id=current_user.id, limit=limit)}
+
+
+@router.get("/analytics")
+async def get_ml_analytics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    limit: int = Query(500, ge=20, le=2000),
+) -> Any:
+    return {"success": True, "data": await build_ml_signal_analytics(db, user_id=current_user.id, limit=limit)}
 
 
 @router.post("/models/activate")

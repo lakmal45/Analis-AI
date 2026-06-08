@@ -9,8 +9,8 @@ class BacktestRequest(BaseModel):
     symbol: str
     timeframe: str = "1h"
     limit: int = 1000
-    analysisWindow: int = 210
-    warmupCandles: int = 26
+    analysisWindow: int = 300
+    warmupCandles: int = 210
     resolutionCandles: int = 5
     sampleSize: int = 50
     leverage: int = 10
@@ -25,6 +25,10 @@ class BacktestRequest(BaseModel):
     slippagePct: float = 0.01
     backtestMlModel: str | None = None
     applyAccuracyGuardrails: bool = False
+    preset: str | None = None
+    validationMode: str | None = None
+    includeMtfConfirmation: bool = False
+    includeOrderFlowConfirmation: bool = False
 
 
 class BacktestRunResponse(BaseModel):

@@ -29,47 +29,32 @@ const PASSWORD = env.TEST_USER_PASSWORD;
 /* ------------------------------------------------------------------ */
 
 /** Timeframes to sweep */
-const TIMEFRAMES = ["15m", "1h", "4h"];
+const TIMEFRAMES = ["1h"];
 
 /** Resolution candles per timeframe */
 const RESOLUTION_CANDLES_MAP = {
-  "15m": 20,
   "1h": 20,
-  "4h": 10,
 };
 
-/** ATR Target/Stop multiplier combos [target, stop] */
-const ATR_COMBOS = [
-  [2, 1],
-  [4, 1],
-];
 
 /**
- * Date window configuration per timeframe, scaled by ratio 15m:1h:4h = 1:4:16.
- *
- * BOTH window size AND step size scale by the same ratio so that each
- * timeframe covers the same number of candles and the overlap proportion
- * between consecutive windows stays consistent.
+ * Date window configuration per timeframe.
  *
  * Candle counts per window:
- *   15m   30 days × 96 candles/day = 2,880 candles
  *   1h   120 days × 24 candles/day = 2,880 candles
- *   4h   480 days ×  6 candles/day = 2,880 candles
  *
- * Each timeframe gets exactly 12 windows. The last window always ends on
- * FINAL_END_DATE (2026-05-20). The first start date is computed backwards.
+ * Each timeframe gets exactly 60 windows. The last window always ends on
+ * FINAL_END_DATE (2026-06-04). The first start date is computed backwards.
  */
 const TIMEFRAME_WINDOW_CONFIG = {
-  "15m": { windowDays: 29, stepDays: 10 },    //  30-day window,  10-day step  (×1)
-  "1h": { windowDays: 119, stepDays: 40 },   // 120-day window,  40-day step  (×4)
-  "4h": { windowDays: 479, stepDays: 160 },  // 480-day window, 160-day step  (×16)
+  "1h": { windowDays: 30, stepDays: 30 },   // 30-day contiguous windows
 };
 
-/** Every timeframe gets exactly 12 windows */
-const WINDOWS_PER_TIMEFRAME = 12;
+/** Every timeframe gets exactly 72 windows (6 years) */
+const WINDOWS_PER_TIMEFRAME = 72;
 
 /** No window may end after this date */
-const FINAL_END_DATE = new Date("2026-05-20");
+const FINAL_END_DATE = new Date("2026-06-06");
 
 /**
  * Generate exactly WINDOWS_PER_TIMEFRAME date windows for a timeframe.
@@ -126,7 +111,18 @@ const FIXED_CONFIG = {
   tradeAmountUsd: 10,
   intrabarPolicy: "conservative",
   backtestMlModel: "off",
+  applyAccuracyGuardrails: false,
+  preset: "balanced",
 };
+
+/** Rule Presets to sweep */
+const RULE_PRESETS = [
+  "balanced",
+  "trend_following",
+  "mean_reversion",
+  "breakout",
+  "scalping",
+];
 
 /** Delay between API calls in ms (rate-limit safety) */
 const DELAY_BETWEEN_CALLS_MS = 4000;
@@ -146,16 +142,15 @@ function buildCombinations(symbols) {
     for (const timeframe of TIMEFRAMES) {
       const dateWindows = generateDateWindows(timeframe);
       for (const window of dateWindows) {
-        for (const [atrTarget, atrStop] of ATR_COMBOS) {
+        for (const preset of RULE_PRESETS) {
           combos.push({
+            ...FIXED_CONFIG,
             symbol,
             timeframe,
+            preset,
             resolutionCandles: RESOLUTION_CANDLES_MAP[timeframe],
-            atrTargetMultiplier: atrTarget,
-            atrStopMultiplier: atrStop,
             startDate: window.startDate,
             endDate: window.endDate,
-            ...FIXED_CONFIG,
           });
         }
       }
@@ -208,19 +203,19 @@ test.describe("Backtest Runner — Bulk Data Collection", () => {
     /* ---- Step 3: Build parameter grid ---- */
     const combinations = buildCombinations(symbols);
 
-    console.log("📊 Parameter grid (12 windows per timeframe, ratio 1:4:16 for window AND step):");
+    console.log("📊 Parameter grid (60 windows, 5 presets):");
     for (const tf of TIMEFRAMES) {
       const windows = generateDateWindows(tf);
       const cfg = TIMEFRAME_WINDOW_CONFIG[tf];
       console.log(
-        `   ${tf}: ${windows.length} windows × ${ATR_COMBOS.length} ATR = ${windows.length * ATR_COMBOS.length} runs/coin  (${cfg.windowDays + 1}-day window, ${cfg.stepDays}-day step, ~2880 candles)`,
+        `   ${tf}: ${windows.length} windows × ${RULE_PRESETS.length} presets = ${windows.length * RULE_PRESETS.length} runs/coin  (${cfg.windowDays + 1}-day window, ${cfg.stepDays}-day step, ~2880 candles)`,
       );
       console.log(
         `         ${windows[0].startDate} → ${windows[windows.length - 1].endDate}`,
       );
     }
     console.log(`   Leverage:      ${FIXED_CONFIG.leverage}x`);
-    console.log(`   ATR combos:    ${ATR_COMBOS.map(([t, s]) => `${t}/${s}`).join(", ")}`);
+    console.log(`   Presets:       ${RULE_PRESETS.join(", ")}`);
     console.log(`   Coins:         ${symbols.length}`);
     console.log(`   Total runs:    ${combinations.length}`);
     console.log("");
@@ -238,7 +233,7 @@ test.describe("Backtest Runner — Bulk Data Collection", () => {
 
     for (let i = 0; i < combinations.length; i++) {
       const combo = combinations[i];
-      const label = `[${i + 1}/${combinations.length}] ${combo.symbol} ${combo.timeframe} ${combo.startDate}→${combo.endDate} ATR ${combo.atrTargetMultiplier}/${combo.atrStopMultiplier}`;
+      const label = `[${i + 1}/${combinations.length}] ${combo.symbol} ${combo.timeframe} [${combo.preset}] ${combo.startDate}→${combo.endDate}`;
 
       try {
         const backtestRes = await request.post(`${API_BASE}/backtest`, {

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
 import { useTheme } from "../context/useTheme";
-import api from "../api/api";
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);

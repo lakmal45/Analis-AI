@@ -60,6 +60,8 @@ def save_bundle(bundle: dict, metadata: dict, activate: bool = True) -> dict:
         "metrics": metadata.get("metrics", {}),
         "promotion": metadata.get("promotion", {}),
         "datasetPath": metadata.get("datasetPath"),
+        "featureColumns": metadata.get("featureColumns"),
+        "featureStats": metadata.get("featureStats"),
         "notes": metadata.get("notes"),
     }
 
@@ -156,4 +158,3 @@ def delete_model(model_version: str) -> bool:
         
     save_registry(registry)
     return True
-

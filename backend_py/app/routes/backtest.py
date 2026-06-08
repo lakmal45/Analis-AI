@@ -79,6 +79,30 @@ async def delete_all_backtest_history(
     return {"success": True, "message": "All backtest runs deleted successfully"}
 
 
+@router.delete("/history/filter")
+async def delete_filtered_backtest_history(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    symbol: str | None = None,
+    timeframe: str | None = None,
+) -> Any:
+    if not symbol and not timeframe:
+        raise HTTPException(status_code=400, detail="Must provide at least symbol or timeframe")
+        
+    stmt = delete(BacktestRun).where(BacktestRun.user_id == current_user.id)
+    
+    if symbol:
+        stmt = stmt.where(BacktestRun.symbol == symbol)
+    if timeframe:
+        # JSONB access in SQLAlchemy: config->>'timeframe'
+        stmt = stmt.where(BacktestRun.config["timeframe"].astext == timeframe)
+        
+    result = await db.execute(stmt)
+    await db.commit()
+    
+    return {"success": True, "message": f"Deleted matching backtest runs"}
+
+
 @router.delete("/history/{run_id}")
 async def delete_backtest_history(
     run_id: int,

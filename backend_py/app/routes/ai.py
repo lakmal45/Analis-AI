@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.models.user import User
+from app.ml.model_store import list_models, load_latest_training
+from app.ml.quality import build_model_quality_report
 router = APIRouter(prefix="/api/ai", tags=["AI"])
 
 
@@ -18,12 +20,14 @@ async def get_ml_lifecycle(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Any:
+    registry = list_models()
     return {
         "success": True,
         "data": {
             "isTraining": False,
-            "lastTrainingRun": None,
-            "models": []
+            "lastTrainingRun": load_latest_training(),
+            "activeModelVersion": registry.get("activeModelVersion"),
+            "models": registry.get("models", [])
         }
     }
 
@@ -32,11 +36,14 @@ async def get_ml_health(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Any:
+    report = build_model_quality_report()
     return {
         "success": True,
         "data": {
-            "status": "healthy",
-            "uptime": "100%",
-            "lastTraining": None
+            "status": report["quality"]["status"],
+            "activeModelVersion": report.get("activeModelVersion"),
+            "modelCount": report.get("modelCount"),
+            "reasons": report["quality"].get("reasons", []),
+            "lastTraining": report["quality"].get("trainedAt"),
         }
     }

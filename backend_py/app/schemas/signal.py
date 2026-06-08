@@ -8,6 +8,9 @@ class SignalGenerateRequest(BaseModel):
     symbol: str
     timeframe: str = "1h"
     leverage: int | None = None
+    preset: str | None = None
+    validationMode: str | None = None
+    shadowMode: bool = False
 
 
 class SignalResolveRequest(BaseModel):

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.market_service import get_klines
-from app.services.signal_service import generate_signal_from_klines
+from app.services.signal_service import _resolve_validation_mode, generate_signal_from_klines
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +431,14 @@ async def run_backtest(request: dict[str, Any]) -> dict[str, Any]:
         backtest_ml_model = None
         
     apply_accuracy_guardrails = request.get("applyAccuracyGuardrails", False)
+    preset = request.get("preset")
+    validation_mode = request.get("validationMode")
+    include_mtf_confirmation = bool(request.get("includeMtfConfirmation", False))
+    include_order_flow_confirmation = bool(request.get("includeOrderFlowConfirmation", False))
+    active_validation_mode = _resolve_validation_mode(
+        validation_mode,
+        "rules_plus_ml" if backtest_ml_model else "rules_only",
+    )
     fees_per_trade_pct = to_bounded_float(request.get("feesPerTradePct"), 0.04, 0, 1)
     slippage_pct = to_bounded_float(request.get("slippagePct"), 0.05, 0, 1)
     
@@ -483,6 +491,10 @@ async def run_backtest(request: dict[str, Any]) -> dict[str, Any]:
             leverage=leverage,
             ml_model=backtest_ml_model,
             apply_accuracy_guardrails=apply_accuracy_guardrails,
+            preset=preset,
+            validation_mode=active_validation_mode,
+            include_mtf_confirmation=include_mtf_confirmation,
+            include_order_flow_confirmation=include_order_flow_confirmation,
         )
 
         if not signal:
@@ -536,6 +548,10 @@ async def run_backtest(request: dict[str, Any]) -> dict[str, Any]:
             "slippagePct": slippage_pct,
             "mlModel": backtest_ml_model or "off",
             "mlEnabled": bool(backtest_ml_model),
+            "preset": preset or "balanced",
+            "validationMode": active_validation_mode,
+            "includeMtfConfirmation": include_mtf_confirmation,
+            "includeOrderFlowConfirmation": include_order_flow_confirmation,
             "simulationModel": "tp_sl_intrabar_v2",
         },
         "dataset": {

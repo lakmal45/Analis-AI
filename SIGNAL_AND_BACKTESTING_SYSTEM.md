@@ -1,6 +1,6 @@
 # Analis-AI — Signal & Backtesting System Documentation
 
-> **Feature Version:** `v4_lorentzian` · **110 ML Features** · **23 Scoring Rules** · **XGBoost + Lorentzian KNN Ensemble**
+> **Feature Version:** `v4_lorentzian` · **103 ML Features** · **23 Scoring Rules** · **XGBoost + Lorentzian KNN Ensemble**
 
 ---
 
@@ -55,7 +55,7 @@ Analis-AI is a three-tier cryptocurrency futures signal generation and backtesti
 │  │ Feature      │  │ Training     │  │ Model Store  │              │
 │  │ Builder      │  │ Pipeline     │  │ (Registry)   │              │
 │  │ (pandas_ta)  │  │ (XGBoost +   │  │ (.joblib)    │              │
-│  │ 110 features │  │  KNN)        │  │              │              │
+│  │ 103 features │  │  KNN)        │  │              │              │
 │  └──────────────┘  └──────────────┘  └──────────────┘              │
 │                                                                     │
 │  Endpoints: /features, /predict, /train, /health, /models           │
@@ -72,7 +72,7 @@ Analis-AI is a three-tier cryptocurrency futures signal generation and backtesti
 | **ML Feature Service** | `backend/services/mlFeatureService.js` | JS fallback feature builder + Python feature proxy |
 | **ML Inference** | `backend/services/mlInferenceService.js` | HTTP client for Python ML service |
 | **ML Dataset** | `backend/services/mlDatasetService.js` | Feature flattening + training data export |
-| **Feature Builder** | `backend/ml_service/feature_builder.py` | 110-feature Python computation (pandas_ta) |
+| **Feature Builder** | `backend/ml_service/feature_builder.py` | 103-feature Python computation (native mixed: pandas_ta + custom derived features) |
 | **Feature Schema** | `backend/ml_service/feature_schema.py` | Authoritative feature column list |
 | **Training Pipeline** | `backend/ml_service/training.py` | XGBoost + Lorentzian KNN training |
 | **Lorentzian Model** | `backend/ml_service/lorentzian_model.py` | KNN classifier with Lorentzian distance |
@@ -90,7 +90,7 @@ Raw Kline Data (OHLCV candles from Binance)
      │
      ▼
 ┌─────────────────────────┐
-│  1. Feature Engineering │  → 110 features computed via pandas_ta (Python)
+│  1. Feature Engineering │  → 103 features computed via pandas_ta plus custom Python logic
 │     (feature_builder.py)│     Falls back to JS manual computation if Python unavailable
 └────────────┬────────────┘
              │
@@ -140,7 +140,7 @@ The threshold adapts to how many indicators are available (e.g., if ADX data is 
 
 ## 3. Technical Indicators
 
-All indicators are computed by the Python `feature_builder.py` using the `pandas_ta` library. When the Python ML service is unavailable, a subset is computed by the Node.js `indicatorService.js` as a fallback.
+Technical indicators are computed by the Python `feature_builder.py` using `pandas_ta`, while derived, structural, candle, kernel, and Lorentzian fields are computed by custom Python logic.
 
 ### 3.1 Core Indicators (16)
 
@@ -195,7 +195,7 @@ All indicators are computed by the Python `feature_builder.py` using the `pandas
 
 ## 4. ML Feature Engineering
 
-### 4.1 Feature Categories (110 total)
+### 4.1 Feature Categories (103 total)
 
 | Category | Count | Description |
 |---|---|---|
@@ -215,7 +215,7 @@ All indicators are computed by the Python `feature_builder.py` using the `pandas
 |---|---|---|---|
 | `v1` | Manual JS | ~60 | Node.js `indicatorService.js` (fallback) |
 | `v3_expanded` | Pandas TA | 98 | Python `feature_builder.py` |
-| `v4_lorentzian` | **Current** | **110** | Python `feature_builder.py` + Lorentzian Classification |
+| `v4_lorentzian` | **Current** | **103** | Python `feature_builder.py` + Lorentzian Classification |
 
 ### 4.3 Feature Computation Flow
 
@@ -226,9 +226,9 @@ Raw OHLCV Candles (minimum 26 required)
      │         │
      │    YES  ▼                          NO  ▼
      │    pandas_ta computes ALL           JS indicatorService computes
-     │    110 features                     ~60 features (v1)
+     │    103 features                     ~60 features (v1)
      │    Version: v4_lorentzian           Version: v1
-     │    Source: pandas_ta                Source: manual_indicator_service
+     │    Source: native_mixed             Source: manual_indicator_service
      │         │                               │
      │         ▼                               ▼
      │    Full feature snapshot            Partial snapshot (nulls for
@@ -377,7 +377,7 @@ Trending Market (reduced mrW, full tfW):
 The ML model uses a **weighted ensemble** of two classifiers:
 
 ```
-110 Flattened Features
+103 Flattened Features
         │
         ▼
    SimpleImputer (fill_value=0)
@@ -808,7 +808,7 @@ Backend fetches kline data from Binance
 buildMlFeatureSnapshotWithFallback()
         │
         ├── Try: POST /features to Python ML service
-        │       → feature_builder.py computes 110 features
+        │       → feature_builder.py computes 103 features
         │       → Returns v4_lorentzian snapshot
         │
         └── Fallback: JS buildMlFeatureSnapshot()

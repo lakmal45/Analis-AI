@@ -7,8 +7,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
@@ -19,7 +22,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBClassifier
 
 from app.config import settings
-from app.ml.feature_schema import FEATURE_COLUMNS
+from app.ml.feature_schema import CATEGORICAL_FEATURES, FEATURE_COLUMNS
+from app.ml.quality import summarize_feature_rows
 from app.ml.lorentzian_model import build_lorentzian_knn
 
 
@@ -61,12 +65,35 @@ def sort_training_frame(frame: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def build_feature_imputer(columns: list[str]) -> ColumnTransformer:
+    categorical_features = CATEGORICAL_FEATURES
+    cat_cols = [c for c in columns if c in categorical_features]
+
+    transformers = []
+    if cat_cols:
+        transformers.append(("cat", Pipeline([
+            ("imputer", SimpleImputer(strategy="constant", fill_value="UNKNOWN")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+        ]), cat_cols))
+        
+    return ColumnTransformer(transformers=transformers, remainder="passthrough")
+
+
 def prepare_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     available_columns = [column for column in FEATURE_COLUMNS if column in frame.columns]
     if not available_columns:
         raise ValueError("No supported feature columns were found in the dataset")
 
     x_frame = frame[available_columns].copy()
+    
+    categorical_features = CATEGORICAL_FEATURES
+    
+    for col in x_frame.columns:
+        if col not in categorical_features:
+            x_frame[col] = pd.to_numeric(x_frame[col], errors="coerce")
+        else:
+            x_frame[col] = x_frame[col].astype(str)
+        
     y_frame = frame["label"].astype(int)
     return x_frame, y_frame
 
@@ -246,7 +273,7 @@ def build_walk_forward_metrics(
         if min(y_train.nunique(), y_calibration.nunique(), y_test.nunique()) < 2:
             continue
 
-        imputer = SimpleImputer(strategy="constant", fill_value=0)
+        imputer = build_feature_imputer(list(x_frame.columns))
         x_train = imputer.fit_transform(x_frame.iloc[train_idx])
         x_calibration = imputer.transform(x_frame.iloc[calibration_idx])
         x_test = imputer.transform(x_frame.iloc[test_idx])
@@ -348,7 +375,7 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
             "Each chronological split must contain both WIN and LOSS samples"
         )
 
-    imputer = SimpleImputer(strategy="constant", fill_value=0)
+    imputer = build_feature_imputer(list(x_frame.columns))
     x_train = imputer.fit_transform(x_train_frame)
     x_calibration = imputer.transform(x_calibration_frame)
     x_test = imputer.transform(x_test_frame)
@@ -370,12 +397,24 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
     # Train a KNN classifier with Lorentzian distance alongside XGBoost.
     # Wrapped in try/except so KNN failure never blocks XGBoost training.
     knn_model = None
+    knn_pipeline = None
     knn_holdout_metrics: dict[str, Any] = {}
     ensemble_weights = {"xgboost": 1.0}
     try:
+        from sklearn.impute import SimpleImputer
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.pipeline import Pipeline
+        
+        knn_pipeline = Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler())
+        ])
+        x_train_knn = knn_pipeline.fit_transform(x_train)
+        x_test_knn = knn_pipeline.transform(x_test)
+
         knn = build_lorentzian_knn(n_neighbors=8)
-        knn.fit(x_train, y_train)
-        knn_test_probs = knn.predict_proba(x_test)[:, 1]
+        knn.fit(x_train_knn, y_train)
+        knn_test_probs = knn.predict_proba(x_test_knn)[:, 1]
         knn_holdout_metrics = compute_binary_metrics(y_test, knn_test_probs)
         knn_model = knn
         ensemble_weights = {"xgboost": 0.65, "lorentzian_knn": 0.35}
@@ -400,6 +439,10 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "walkForward": walk_forward_metrics,
         "lorentzianKnn": knn_holdout_metrics if knn_model else None,
     }
+    feature_stats = summarize_feature_rows(
+        x_frame.to_dict(orient="records"),
+        feature_columns=list(x_frame.columns),
+    )
 
     metadata = {
         "trainedAt": datetime.now(timezone.utc).isoformat(),
@@ -411,6 +454,7 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "metrics": metrics,
         "promotion": promotion,
         "ensembleWeights": ensemble_weights,
+        "featureStats": feature_stats,
     }
 
     bundle = {
@@ -418,6 +462,7 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "imputer": imputer,
         "calibrator": calibrator,
         "lorentzian_knn": knn_model,
+        "knn_pipeline": knn_pipeline,
         "ensemble_weights": ensemble_weights,
     }
     return bundle, metadata

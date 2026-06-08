@@ -92,7 +92,23 @@ const Dashboard = () => {
       setSignalSummary(summaryResponse.data?.data || null);
       setMlSummary(mlSummaryResponse?.data?.data || null);
       setMlHealth(mlHealthResponse?.data?.data || null);
-      setMlLifecycle(mlLifecycleResponse?.data?.data || null);
+      const lifecycle = mlLifecycleResponse?.data?.data || null;
+      setMlLifecycle(
+        lifecycle
+          ? {
+              ...lifecycle,
+              registry: lifecycle.registry || {
+                activeModelVersion: lifecycle.activeModelVersion,
+                models: lifecycle.models || [],
+              },
+              latestTraining:
+                lifecycle.latestTraining ||
+                (lifecycle.lastTrainingRun
+                  ? { latestTraining: lifecycle.lastTrainingRun }
+                  : null),
+            }
+          : null,
+      );
       setError(null);
     } catch (err) {
       console.error("Error fetching market overview:", err);
@@ -146,10 +162,7 @@ const Dashboard = () => {
   const triggerMlRetrain = async () => {
     try {
       setMlActionLoading(true);
-      await api.post("/ai/ml/retrain", {
-        activateOnTrain: true,
-        notes: "dashboard_manual_retrain",
-      });
+      await api.post("/ml/retrain");
       await fetchMarketOverview();
     } catch (err) {
       console.error("Error retraining ML model:", err);
@@ -162,7 +175,7 @@ const Dashboard = () => {
   const activateModelVersion = async (modelVersion) => {
     try {
       setMlActionLoading(true);
-      await api.post(`/ai/ml/models/${encodeURIComponent(modelVersion)}/activate`);
+      await api.post("/ml/models/activate", { version: modelVersion });
       await fetchMarketOverview();
     } catch (err) {
       console.error("Error activating ML model:", err);
@@ -180,7 +193,7 @@ const Dashboard = () => {
     },
     {
       label: "Ready Predictions",
-      value: `${(mlSummary?.readyPredictionRate || 0).toFixed(1)}%`,
+      value: `${(mlSummary?.mlCoverageRate || 0).toFixed(1)}%`,
       tone: "text-blue-400",
     },
     {
@@ -190,7 +203,7 @@ const Dashboard = () => {
     },
     {
       label: "Resolved ML Signals",
-      value: `${mlSummary?.resolvedMlSignals?.toLocaleString() || "0"}`,
+      value: `${mlSummary?.totalSignals?.toLocaleString() || "0"}`,
       tone: "text-white",
     },
   ];
@@ -274,12 +287,12 @@ const Dashboard = () => {
             </div>
             <span
               className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                mlHealth?.modelLoaded
+                mlHealth?.status === "healthy" || mlHealth?.status === "degraded"
                   ? "bg-green-400/20 text-green-400"
                   : "bg-yellow-400/20 text-yellow-400"
               }`}
             >
-              {mlHealth?.modelLoaded ? "Model Loaded" : "Model Not Loaded"}
+              {mlHealth?.activeModelVersion ? "Model Loaded" : "Model Not Loaded"}
             </span>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
@@ -334,16 +347,16 @@ const Dashboard = () => {
               <p className="text-gray-500 mb-1">Service Status</p>
               <p
                 className={`font-semibold ${
-                  mlHealth?.ok ? "text-green-400" : "text-red-400"
+                  mlHealth?.status === "healthy" ? "text-green-400" : "text-yellow-400"
                 }`}
               >
-                {mlHealth?.ok ? "Online" : "Offline"}
+                {mlHealth?.status || "unknown"}
               </p>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-gray-500 mb-1">Loaded Model</p>
               <p className="text-white font-semibold">
-                {mlHealth?.modelVersion || "N/A"}
+                {mlHealth?.activeModelVersion || "N/A"}
               </p>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
@@ -353,9 +366,9 @@ const Dashboard = () => {
               </p>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-gray-500 mb-1">Supported Features</p>
+              <p className="text-gray-500 mb-1">Model Count</p>
               <p className="text-white font-semibold">
-                {mlHealth?.supportedFeatureCount ?? 0}
+                {mlHealth?.modelCount ?? 0}
               </p>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">

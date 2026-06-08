@@ -126,10 +126,22 @@ def _normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def _safe_col(dataframe: pd.DataFrame | None, column_name: str) -> pd.Series | None:
-    """Safely extract a column from a DataFrame that may be None."""
-    if dataframe is None or column_name not in dataframe:
+    """Safely extract a column from a DataFrame that may be None.
+    Includes fallback matching for pandas-ta version differences."""
+    if dataframe is None or dataframe.empty:
         return None
-    return dataframe[column_name]
+    if column_name in dataframe.columns:
+        return dataframe[column_name]
+    
+    # Fallback: match prefix before first underscore (e.g. 'BBU_' from 'BBU_20_2.0')
+    parts = str(column_name).split('_')
+    if len(parts) > 1:
+        base_prefix = parts[0] + '_'
+        for col in dataframe.columns:
+            if str(col).startswith(base_prefix):
+                return dataframe[col]
+                
+    return None
 
 
 def _latest_swing_level(
@@ -642,6 +654,7 @@ def build_feature_snapshot(
     adx14 = _safe_col(adx, "ADX_14")
     dmp14 = _safe_col(adx, "DMP_14")
     dmn14 = _safe_col(adx, "DMN_14")
+    trix_line = _safe_col(trix15, "TRIX_15_9")
 
     ppo_line = _safe_col(ppo, "PPO_12_26_9")
     ppo_hist = _safe_col(ppo, "PPOh_12_26_9")
@@ -873,6 +886,7 @@ def build_feature_snapshot(
     timeframe = options.get("timeframe", "1h")
     leverage = options.get("leverage", 10)
     signal_type = options.get("signalType", "UNKNOWN")
+    preset = options.get("preset", "UNKNOWN")
 
     # volatilityPct: max of three volatility proxies, each already in % terms.
     # None values are treated as 0 (unknown = no detected volatility from that source).
@@ -939,7 +953,7 @@ def build_feature_snapshot(
     return {
         "featureVersion": "v4_lorentzian",
         "generatedAt": pd.Timestamp.utcnow().isoformat(),
-        "source": "pandas_ta",
+        "source": "native_mixed",
         "momentum": {
             "rsi14": _latest(rsi14),
             "macdLine": latest_macd_line,
@@ -954,7 +968,7 @@ def build_feature_snapshot(
             "williamsR14": _latest(willr14),
             "awesomeOscillator": _latest(ao),
             "ultimateOscillator": _latest(uo),
-            "trix15": _latest(trix15),
+            "trix15": _latest(trix_line),
             "ppoLine": _latest(ppo_line),
             "ppoHistogram": _latest(ppo_hist),
             # Lorentzian Classification — WaveTrend
@@ -1068,6 +1082,7 @@ def build_feature_snapshot(
             "timeframe": timeframe,
             "leverage": _safe_number(leverage) or 10,
             "marketRegime": market_regime,
+            "preset": preset,
             "closePrice": latest_close,
             "openPrice": latest_open,
             "highPrice": latest_high,

@@ -11,9 +11,74 @@ from app.middleware.auth import get_current_user
 from app.models.signal import Signal
 from app.models.user import User
 from app.schemas.signal import SignalGenerateRequest, SignalResolveRequest, SignalResponse, SignalSingleResponse, SignalListResponse
-from app.services.signal_service import generate_signal
+from app.ml.quality import build_ml_signal_analytics
+from app.services.signal_service import (
+    DEFAULT_FUTURES_LEVERAGE,
+    DEFAULT_BACKTEST_VALIDATION_MODE,
+    DEFAULT_LIVE_VALIDATION_MODE,
+    MIN_DIRECTIONAL_RULE_CONFIDENCE,
+    MIN_DIRECTIONAL_SCORE_GAP,
+    MIN_ML_PROBABILITY,
+    MIN_MODEL_DATASET_ROWS,
+    MIN_MODEL_ROC_AUC,
+    ML_PROBABILITY_WEIGHT,
+    REQUIRE_HEALTHY_ML_FOR_DIRECTIONAL_SIGNALS,
+    RULE_CONFIDENCE_WEIGHT,
+    RULE_PRESETS,
+    SIGNAL_THRESHOLD_RATIO,
+    TIMEFRAME_THRESHOLD_CONFIGS,
+    VALIDATION_MODES,
+    MIN_SIGNAL_QUALITY,
+    _get_regime_adaptive_multipliers,
+    generate_signal,
+)
 
 router = APIRouter(prefix="/api/signals", tags=["Signals"])
+
+
+@router.get("/config")
+async def get_signal_config(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Any:
+    regimes = [
+        "TRENDING",
+        "TRENDING_VOLATILE",
+        "RANGING",
+        "RANGING_VOLATILE",
+        "CONSOLIDATING",
+        "BREAKOUT",
+        "UNKNOWN",
+    ]
+    return {
+        "success": True,
+        "data": {
+            "defaultFuturesLeverage": DEFAULT_FUTURES_LEVERAGE,
+            "confidenceBlend": {
+                "ruleConfidenceWeight": RULE_CONFIDENCE_WEIGHT,
+                "mlProbabilityWeight": ML_PROBABILITY_WEIGHT,
+            },
+            "thresholds": {
+                "minDirectionalRuleConfidence": MIN_DIRECTIONAL_RULE_CONFIDENCE,
+                "minDirectionalScoreGap": MIN_DIRECTIONAL_SCORE_GAP,
+                "minMlProbability": MIN_ML_PROBABILITY,
+                "minModelRocAuc": MIN_MODEL_ROC_AUC,
+                "minModelDatasetRows": MIN_MODEL_DATASET_ROWS,
+                "signalThresholdRatio": SIGNAL_THRESHOLD_RATIO,
+                "minSignalQuality": MIN_SIGNAL_QUALITY,
+                "requireHealthyMlForDirectionalSignals": REQUIRE_HEALTHY_ML_FOR_DIRECTIONAL_SIGNALS,
+            },
+            "timeframes": TIMEFRAME_THRESHOLD_CONFIGS,
+            "presets": RULE_PRESETS,
+            "validationModes": {
+                "available": VALIDATION_MODES,
+                "liveDefault": DEFAULT_LIVE_VALIDATION_MODE,
+                "backtestDefault": DEFAULT_BACKTEST_VALIDATION_MODE,
+            },
+            "targetStopMultipliers": {
+                regime: _get_regime_adaptive_multipliers(regime) for regime in regimes
+            },
+        },
+    }
 
 
 @router.post("/generate", response_model=SignalSingleResponse)
@@ -27,17 +92,23 @@ async def create_signal(
             symbol=request.symbol,
             timeframe=request.timeframe,
             leverage=request.leverage,
+            preset=request.preset,
+            validation_mode=request.validationMode,
+            shadow_mode=request.shadowMode,
         )
-        # Check for active signal duplicate
-        stmt = select(Signal).where(
-            Signal.user_id == current_user.id,
-            Signal.symbol == request.symbol,
-            Signal.timeframe == request.timeframe,
-            Signal.status == "ACTIVE"
-        )
-        existing = (await db.execute(stmt)).scalars().first()
+        is_shadow = signal_data["status"] == "SHADOW"
+        existing = None
+        if not is_shadow:
+            # Check for active signal duplicate
+            stmt = select(Signal).where(
+                Signal.user_id == current_user.id,
+                Signal.symbol == signal_data["symbol"],
+                Signal.timeframe == signal_data["timeframe"],
+                Signal.status == "ACTIVE"
+            )
+            existing = (await db.execute(stmt)).scalars().first()
         
-        signal_data["was_duplicate"] = bool(existing)
+        signal_data["was_duplicate"] = bool(existing) if not is_shadow else False
         if existing:
             # Complete the existing one as CANCELLED before opening new
             existing.status = "CANCELLED"
@@ -49,6 +120,7 @@ async def create_signal(
             symbol=signal_data["symbol"],
             timeframe=signal_data["timeframe"],
             signal_type=signal_data["signal_type"],
+            status=signal_data["status"],
             market_type=signal_data["market_type"],
             leverage=signal_data["leverage"],
             confidence=signal_data["confidence"],
@@ -134,15 +206,16 @@ async def get_stats_ml_summary(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Any:
+    analytics = await build_ml_signal_analytics(db, user_id=current_user.id)
     return {
         "success": True,
         "data": {
-            "totalSignals": 0,
-            "winRate": 0,
-            "modelsActive": 0,
-            "averageConfidence": 0,
-            "mlCoverageRate": 0,
-            "avgMlProbabilityPct": 0
+            "totalSignals": analytics["window"]["totalSignals"],
+            "winRate": analytics["outcomes"]["winRate"],
+            "modelsActive": len(analytics["mlCoverage"]["modelVersions"]),
+            "averageConfidence": analytics["confidence"]["averageConfidence"],
+            "mlCoverageRate": analytics["mlCoverage"]["coverageRate"],
+            "avgMlProbabilityPct": analytics["mlCoverage"]["averageProbabilityPct"],
         }
     }
 
