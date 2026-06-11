@@ -31,7 +31,7 @@ TRUSTED_RESOLUTION_SOURCES = {
 }
 
 async def export_training_dataset(
-    min_signals: int = 60,
+    min_signals: int = 200,
     source: str = "combined",
     min_resolved_at: str | None = None,
     trusted_resolution_only: bool = True
@@ -81,7 +81,6 @@ async def export_training_dataset(
                         "source": "live_signal"
                     }
                     flattened_features = flatten_feature_snapshot(sig.features)
-                    flattened_features["context.signalType"] = sig.signal_type
                     for feature in FEATURE_COLUMNS:
                         if feature == "type" and "type" in row:
                             continue
@@ -136,7 +135,6 @@ async def export_training_dataset(
                             "source": "backtest"
                         }
                         flattened_features = flatten_feature_snapshot(features)
-                        flattened_features["context.signalType"] = trade.get("type")
                         for feature in FEATURE_COLUMNS:
                             if feature == "type" and "type" in row:
                                 continue

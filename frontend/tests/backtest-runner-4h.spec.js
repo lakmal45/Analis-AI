@@ -51,10 +51,10 @@ const TIMEFRAME_WINDOW_CONFIG = {
 };
 
 /** Every timeframe gets exactly 72 windows (6 years) */
-const WINDOWS_PER_TIMEFRAME = 21;
+const WINDOWS_PER_TIMEFRAME = 18;
 
 /** No window may end after this date */
-const FINAL_END_DATE = new Date("2026-06-06");
+const FINAL_END_DATE = new Date("2026-06-08");
 
 /**
  * Generate exactly WINDOWS_PER_TIMEFRAME date windows for a timeframe.

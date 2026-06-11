@@ -24,7 +24,7 @@ from xgboost import XGBClassifier
 from app.config import settings
 from app.ml.feature_schema import CATEGORICAL_FEATURES, FEATURE_COLUMNS
 from app.ml.quality import summarize_feature_rows
-from app.ml.lorentzian_model import build_lorentzian_knn
+
 
 
 def load_training_frame(dataset_path: str | Path) -> pd.DataFrame:
@@ -99,9 +99,9 @@ def prepare_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
 
 
 def validate_training_frame(frame: pd.DataFrame, y_frame: pd.Series) -> None:
-    if len(frame) < 60:
+    if len(frame) < 200:
         raise ValueError(
-            "Training dataset must contain at least 60 rows before retraining"
+            "Training dataset must contain at least 200 rows before retraining"
         )
 
     class_counts = y_frame.value_counts().to_dict()
@@ -112,30 +112,30 @@ def validate_training_frame(frame: pd.DataFrame, y_frame: pd.Series) -> None:
         )
 
     min_class_count = min(class_counts.get(0, 0), class_counts.get(1, 0))
-    if min_class_count < 10:
+    if min_class_count < 30:
         raise ValueError(
-            "Training dataset needs at least 10 WIN and 10 LOSS samples for stable calibration"
+            "Training dataset needs at least 30 WIN and 30 LOSS samples for stable calibration"
         )
 
     split_sizes = derive_split_sizes(len(frame))
-    if min(split_sizes.values()) < 10:
+    if min(split_sizes.values()) < 20:
         raise ValueError(
             "Training dataset is too small for chronological train/calibration/test splits"
         )
 
 
 def derive_split_sizes(total_rows: int) -> dict[str, int]:
-    test_rows = max(20, int(round(total_rows * 0.2)))
-    calibration_rows = max(20, int(round(total_rows * 0.2)))
+    test_rows = max(40, int(round(total_rows * 0.2)))
+    calibration_rows = max(40, int(round(total_rows * 0.2)))
     train_rows = total_rows - calibration_rows - test_rows
 
-    if train_rows < 20:
-        shortage = 20 - train_rows
-        reduce_test = min(shortage, max(0, test_rows - 10))
+    if train_rows < 100:
+        shortage = 100 - train_rows
+        reduce_test = min(shortage, max(0, test_rows - 20))
         test_rows -= reduce_test
         shortage -= reduce_test
         if shortage > 0:
-            reduce_calibration = min(shortage, max(0, calibration_rows - 10))
+            reduce_calibration = min(shortage, max(0, calibration_rows - 20))
             calibration_rows -= reduce_calibration
             shortage -= reduce_calibration
         train_rows = total_rows - calibration_rows - test_rows
@@ -153,15 +153,19 @@ def build_base_model(y_train: pd.Series) -> XGBClassifier:
     scale_pos_weight = negatives / positives if positives > 0 else 1.0
 
     return XGBClassifier(
-        n_estimators=250,
-        max_depth=5,
+        n_estimators=150,
+        max_depth=4,
         learning_rate=0.05,
-        subsample=0.9,
-        colsample_bytree=0.9,
+        subsample=0.5,
+        colsample_bytree=0.5,
         objective="binary:logistic",
         eval_metric="logloss",
         random_state=42,
         scale_pos_weight=scale_pos_weight,
+        reg_lambda=5.0,
+        reg_alpha=5.0,
+        min_child_weight=4,
+        gamma=1.0,
     )
 
 
@@ -175,6 +179,14 @@ def fit_calibrator(
 
     calibrator = LogisticRegression(random_state=42, max_iter=1000)
     calibrator.fit(probabilities.reshape(-1, 1), labels)
+    
+    # If the model's predictions are negatively correlated with the target on the calibration set,
+    # the LogisticRegression will learn a negative coefficient. This literally inverts the predictions
+    # (high XGBoost probability -> low calibrated probability). This causes the test ROC AUC to drop
+    # significantly below 0.5. To prevent this, we disable calibration if the slope is negative.
+    if calibrator.coef_[0][0] <= 0:
+        return None
+        
     return calibrator
 
 
@@ -281,9 +293,12 @@ def build_walk_forward_metrics(
         model = build_base_model(y_train)
         model.fit(x_train, y_train)
 
-        calibration_raw = model.predict_proba(x_calibration)[:, 1]
+        xgb_cal_raw = model.predict_proba(x_calibration)[:, 1]
+        xgb_test_raw = model.predict_proba(x_test)[:, 1]
+        calibration_raw = xgb_cal_raw
+        test_raw = xgb_test_raw
+
         calibrator = fit_calibrator(calibration_raw, y_calibration)
-        test_raw = model.predict_proba(x_test)[:, 1]
         test_calibrated = apply_calibrator(test_raw, calibrator)
 
         fold_metrics = compute_binary_metrics(y_test, test_calibrated)
@@ -383,43 +398,18 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
     model = build_base_model(y_train)
     model.fit(x_train, y_train)
 
-    calibration_raw = model.predict_proba(x_calibration)[:, 1]
+    xgb_cal_raw = model.predict_proba(x_calibration)[:, 1]
+    xgb_test_raw = model.predict_proba(x_test)[:, 1]
+    calibration_raw = xgb_cal_raw
+    test_raw = xgb_test_raw
+
     calibrator = fit_calibrator(calibration_raw, y_calibration)
     if calibrator is None:
         raise ValueError("Calibration split must contain both WIN and LOSS samples")
 
-    test_raw = model.predict_proba(x_test)[:, 1]
     test_calibrated = apply_calibrator(test_raw, calibrator)
     holdout_metrics = compute_binary_metrics(y_test, test_calibrated)
     walk_forward_metrics = build_walk_forward_metrics(x_frame, y_frame)
-
-    # ── Lorentzian KNN ensemble member ──────────────────────────────
-    # Train a KNN classifier with Lorentzian distance alongside XGBoost.
-    # Wrapped in try/except so KNN failure never blocks XGBoost training.
-    knn_model = None
-    knn_pipeline = None
-    knn_holdout_metrics: dict[str, Any] = {}
-    ensemble_weights = {"xgboost": 1.0}
-    try:
-        from sklearn.impute import SimpleImputer
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.pipeline import Pipeline
-        
-        knn_pipeline = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler())
-        ])
-        x_train_knn = knn_pipeline.fit_transform(x_train)
-        x_test_knn = knn_pipeline.transform(x_test)
-
-        knn = build_lorentzian_knn(n_neighbors=8)
-        knn.fit(x_train_knn, y_train)
-        knn_test_probs = knn.predict_proba(x_test_knn)[:, 1]
-        knn_holdout_metrics = compute_binary_metrics(y_test, knn_test_probs)
-        knn_model = knn
-        ensemble_weights = {"xgboost": 0.65, "lorentzian_knn": 0.35}
-    except Exception as knn_err:
-        print(f"[WARN] Lorentzian KNN training failed (XGBoost unaffected): {knn_err}")
 
     promotion = evaluate_promotion_eligibility(
         {
@@ -437,7 +427,6 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "datasetRows": int(len(frame)),
         "calibrationMethod": "platt_logistic_regression",
         "walkForward": walk_forward_metrics,
-        "lorentzianKnn": knn_holdout_metrics if knn_model else None,
     }
     feature_stats = summarize_feature_rows(
         x_frame.to_dict(orient="records"),
@@ -447,13 +436,12 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
     metadata = {
         "trainedAt": datetime.now(timezone.utc).isoformat(),
         "featureColumns": list(x_frame.columns),
-        "featureVersion": "v4_lorentzian",
-        "modelVersion": f"xgb_knn_v4_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        "featureVersion": "v5_xgb_only",
+        "modelVersion": f"xgb_v5_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
         "datasetPath": str(Path(dataset_path)),
         "notes": notes,
         "metrics": metrics,
         "promotion": promotion,
-        "ensembleWeights": ensemble_weights,
         "featureStats": feature_stats,
     }
 
@@ -461,8 +449,5 @@ def train_model(dataset_path: str | Path, notes: str | None = None) -> tuple[dic
         "model": model,
         "imputer": imputer,
         "calibrator": calibrator,
-        "lorentzian_knn": knn_model,
-        "knn_pipeline": knn_pipeline,
-        "ensemble_weights": ensemble_weights,
     }
     return bundle, metadata

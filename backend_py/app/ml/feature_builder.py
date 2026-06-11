@@ -381,23 +381,34 @@ def _rational_quadratic_kernel(
     The RQ kernel is a weighted sum over past values where the weight
     decays as a function of squared distance, modulated by *relative_weight*.
     As *relative_weight* → ∞ the kernel converges to Gaussian.
+
+    Vectorized: pre-computes the weight array once, then applies it via
+    a sliding weighted average using NumPy, avoiding nested Python loops.
     """
-    size = len(src)
-    result = pd.Series(index=src.index, dtype=float)
-    for i in range(size):
-        if i < start_bar:
-            result.iloc[i] = src.iloc[i]
-            continue
-        w_sum = 0.0
-        wv_sum = 0.0
-        for j in range(min(start_bar, i + 1)):
-            w = (1 + (j * j) / (2 * relative_weight * lookback * lookback)) ** (
-                -relative_weight
-            )
-            wv_sum += src.iloc[i - j] * w
-            w_sum += w
-        result.iloc[i] = wv_sum / w_sum if w_sum > 0 else src.iloc[i]
-    return result
+    import numpy as np
+
+    values = src.to_numpy(dtype=np.float64, na_value=np.nan)
+    size = len(values)
+    result = values.copy()
+
+    if size <= start_bar:
+        return pd.Series(result, index=src.index, dtype=float)
+
+    # Pre-compute weight vector: w[j] for j = 0..start_bar-1
+    j_arr = np.arange(start_bar, dtype=np.float64)
+    weights = (1.0 + (j_arr * j_arr) / (2.0 * relative_weight * lookback * lookback)) ** (
+        -relative_weight
+    )
+    # weights[0] is for lag=0 (current bar), weights[1] for lag=1, etc.
+
+    # Apply as a weighted moving average for bars >= start_bar
+    for i in range(start_bar, size):
+        window = values[i - start_bar + 1 : i + 1][::-1]  # most recent first
+        w = weights[: len(window)]
+        w_sum = w.sum()
+        result[i] = (window * w).sum() / w_sum if w_sum > 0 else values[i]
+
+    return pd.Series(result, index=src.index, dtype=float)
 
 
 def _gaussian_kernel(
@@ -405,21 +416,32 @@ def _gaussian_kernel(
     lookback: int = KERNEL_LOOKBACK,
     start_bar: int = KERNEL_START_BAR,
 ) -> pd.Series:
-    """Nadaraya-Watson estimator with Gaussian Kernel."""
-    size = len(src)
-    result = pd.Series(index=src.index, dtype=float)
-    for i in range(size):
-        if i < start_bar:
-            result.iloc[i] = src.iloc[i]
-            continue
-        w_sum = 0.0
-        wv_sum = 0.0
-        for j in range(min(start_bar, i + 1)):
-            w = math.exp(-0.5 * (j * j) / (lookback * lookback))
-            wv_sum += src.iloc[i - j] * w
-            w_sum += w
-        result.iloc[i] = wv_sum / w_sum if w_sum > 0 else src.iloc[i]
-    return result
+    """Nadaraya-Watson estimator with Gaussian Kernel.
+
+    Vectorized: pre-computes the Gaussian weight array once, then applies it
+    via a sliding weighted average using NumPy, avoiding nested Python loops.
+    """
+    import numpy as np
+
+    values = src.to_numpy(dtype=np.float64, na_value=np.nan)
+    size = len(values)
+    result = values.copy()
+
+    if size <= start_bar:
+        return pd.Series(result, index=src.index, dtype=float)
+
+    # Pre-compute weight vector: w[j] = exp(-0.5 * j^2 / lookback^2)
+    j_arr = np.arange(start_bar, dtype=np.float64)
+    weights = np.exp(-0.5 * (j_arr * j_arr) / (lookback * lookback))
+
+    # Apply as a weighted moving average for bars >= start_bar
+    for i in range(start_bar, size):
+        window = values[i - start_bar + 1 : i + 1][::-1]  # most recent first
+        w = weights[: len(window)]
+        w_sum = w.sum()
+        result[i] = (window * w).sum() / w_sum if w_sum > 0 else values[i]
+
+    return pd.Series(result, index=src.index, dtype=float)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -518,14 +540,14 @@ def _compute_lorentzian_features(
     # Approximate Nearest Neighbors search with Lorentzian distance
     distances: list[float] = []
     predictions: list[int] = []
-    last_distance = -1.0
+    last_distance = float("inf")
 
     for i in range(lookback):
         idx = size - 2 - i
         if idx < 0 or idx >= len(labels) or labels[idx] == 0:
             continue
         d = _lorentzian_distance(current, feature_matrix[idx])
-        if d >= last_distance and i % 4 == 0:
+        if d <= last_distance and i % 4 == 0:
             last_distance = d
             distances.append(d)
             predictions.append(labels[idx])
@@ -617,6 +639,7 @@ def build_feature_snapshot(
     cmf20 = ta.cmf(high=high, low=low, close=close, volume=volume, length=20)
     ad = ta.ad(high=high, low=low, close=close, volume=volume)
     efi13 = ta.efi(close=close, volume=volume, length=13)  # Elder Force Index
+    vwma20 = ta.vwma(close=close, volume=volume, length=20)
 
     # Statistics — distribution / normalisation features for ML
     zscore20 = ta.zscore(close=close, length=20)
@@ -694,6 +717,7 @@ def build_feature_snapshot(
 
     latest_hma20 = _latest(hma20)
     latest_dema20 = _latest(dema20)
+    latest_vwma20 = _latest(vwma20)
     latest_dc_upper = _latest(dc_upper)
     latest_dc_lower = _latest(dc_lower)
     latest_kc_upper = _latest(kc_upper)
@@ -776,6 +800,25 @@ def build_feature_snapshot(
         else None,
         latest_dema20,
     )
+    price_vs_vwma20_pct = _pct(
+        latest_close - latest_vwma20
+        if latest_close is not None and latest_vwma20 is not None
+        else None,
+        latest_vwma20,
+    )
+
+    price_slope10 = _slope(close, periods=10)
+    rsi_slope10 = _slope(rsi14, periods=10)
+    rsi_divergence = "NONE"
+    if price_slope10 is not None and rsi_slope10 is not None:
+        if price_slope10 > 0 and rsi_slope10 < 0:
+            rsi_divergence = "BEARISH"
+        elif price_slope10 < 0 and rsi_slope10 > 0:
+            rsi_divergence = "BULLISH"
+
+    ema50_sma200_crossover = "NONE"
+    if latest_ema50 is not None and latest_sma200 is not None:
+        ema50_sma200_crossover = "BULLISH" if latest_ema50 > latest_sma200 else "BEARISH"
 
     # Donchian channel position — where price sits within the channel (0-100%)
     donchian_position_pct = None
@@ -975,6 +1018,7 @@ def build_feature_snapshot(
             "waveTrend1": _safe_number(wt1_latest),
             "waveTrend2": _safe_number(wt2_latest),
             "waveTrendCross": wt_cross,
+            "rsi_divergence": rsi_divergence,
         },
         "trend": {
             "ema20": latest_ema20,
@@ -986,6 +1030,7 @@ def build_feature_snapshot(
             "priceVsEmaPct": _safe_number(price_vs_ema_pct),
             "priceVsSmaPct": _safe_number(price_vs_sma_pct),
             "priceVsSma200Pct": _safe_number(price_vs_sma200_pct),
+            "ema50_sma200_crossover": ema50_sma200_crossover,
             "trendDirection": trend_direction,
             # trendStrength is now price-deviation only (consistent % scale).
             # Use adx14 directly for ADX-based strength assessment.
@@ -1032,6 +1077,7 @@ def build_feature_snapshot(
             "adLine": _latest(ad),
             "adSlope5": _safe_number(ad_slope5),
             "efi13": _latest(efi13),
+            "price_vs_vwma20_pct": _safe_number(price_vs_vwma20_pct),
         },
         "structure": {
             "activeZoneBias": supply_demand["bias"],

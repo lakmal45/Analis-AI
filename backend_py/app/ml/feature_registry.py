@@ -9,7 +9,7 @@ FeatureSource = Literal["pandas_ta", "derived", "raw", "custom"]
 FeatureUsage = Literal["rule_engine", "ml_only"]
 FeatureValueType = Literal["number", "boolean", "category", "string"]
 
-FEATURE_COUNT = 103
+FEATURE_COUNT = len(FEATURE_COLUMNS)
 
 PANDAS_TA_FEATURES = {
     "momentum.rsi14",
@@ -153,7 +153,7 @@ CATEGORY_FEATURES = {
     "trend.psarDirection",
     "structure.activeZoneBias",
     "structure.nearestFvgBias",
-    "context.signalType",
+    "type",
     "context.marketRegime",
     "context.preset",
 }

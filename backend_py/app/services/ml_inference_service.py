@@ -25,10 +25,11 @@ def get_ml_prediction(
     features: dict[str, Any], requested_model_version: str | None = None
 ) -> dict[str, Any] | None:
     """
-    Get prediction from the ML models.
-    
-    Replaces Node.js mlInferenceService HTTP call. Directly loads the active
-    (or requested) model bundle from the filesystem and executes predict_proba.
+    Get prediction from the active ML model (XGBoost + Platt calibration).
+
+    Loads the active (or requested) model bundle from the filesystem and
+    executes predict_proba. The 4 Lorentzian KNN features computed by the
+    feature builder are included as input features to XGBoost.
     """
     try:
         bundle, metadata = load_bundle(requested_model_version)
@@ -41,37 +42,11 @@ def get_ml_prediction(
         feature_quality = build_feature_vector_quality(features, feature_columns)
         transformed = bundle["imputer"].transform(feature_frame)
 
-        # Primary XGBoost model
         xgb_model = bundle.get("model")
         if not xgb_model:
             return None
-            
-        xgb_probability = float(xgb_model.predict_proba(transformed)[0][1])
 
-        # Lorentzian KNN ensemble member
-        knn_probability = None
-        ensemble_weights = bundle.get("ensemble_weights", {"xgboost": 1.0})
-        knn_model = bundle.get("lorentzian_knn")
-        knn_pipeline = bundle.get("knn_pipeline")
-        knn_imputer = bundle.get("knn_imputer") # fallback for older models
-        
-        if knn_model is not None:
-            try:
-                knn_transformed = transformed
-                if knn_pipeline is not None:
-                    knn_transformed = knn_pipeline.transform(transformed)
-                elif knn_imputer is not None:
-                    knn_transformed = knn_imputer.transform(transformed)
-                knn_probability = float(knn_model.predict_proba(knn_transformed)[0][1])
-                raw_probability = (
-                    xgb_probability * ensemble_weights.get("xgboost", 0.65)
-                    + knn_probability * ensemble_weights.get("lorentzian_knn", 0.35)
-                )
-            except Exception as e:
-                logger.warning(f"KNN prediction failed, falling back to XGB: {e}")
-                raw_probability = xgb_probability
-        else:
-            raw_probability = xgb_probability
+        raw_probability = float(xgb_model.predict_proba(transformed)[0][1])
 
         # Platt scaling calibration
         calibrator = bundle.get("calibrator")
@@ -89,11 +64,6 @@ def get_ml_prediction(
             "metrics": metadata.get("metrics", {}),
             "promotion": metadata.get("promotion", {}),
             "featureQuality": feature_quality,
-            "ensemble": {
-                "xgboostProbability": xgb_probability,
-                "knnProbability": knn_probability,
-                "weights": ensemble_weights,
-            },
         }
 
     except Exception as exc:

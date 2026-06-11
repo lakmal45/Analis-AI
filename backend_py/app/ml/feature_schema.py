@@ -15,11 +15,13 @@ FEATURE_COLUMNS = [
     "momentum.waveTrend1",
     "momentum.waveTrend2",
     "momentum.waveTrendCross",
+    "momentum.rsi_divergence",
     # ── Trend ─────────────────────────────────────────────────
     "trend.emaSmaSpreadPct",
     "trend.priceVsEmaPct",
     "trend.priceVsSmaPct",
     "trend.priceVsSma200Pct",
+    "trend.ema50_sma200_crossover",
     "trend.trendDirection",
     "trend.trendStrength",
     "trend.adx14",
@@ -49,6 +51,7 @@ FEATURE_COLUMNS = [
     "volume.relativeVolume",
     "volume.mfi14",
     "volume.cmf20",
+    "volume.price_vs_vwma20_pct",
     "structure.activeZoneBias",
     "structure.nearestSupplyDistancePct",
     "structure.nearestDemandDistancePct",
@@ -65,7 +68,7 @@ FEATURE_COLUMNS = [
     "candle.bearishStrength",
     "candle.isBullish",
     # ── Context ───────────────────────────────────────────────
-    "context.signalType",
+    "type",
     "context.timeframe",
     "context.marketRegime",
     "context.preset",
@@ -82,7 +85,7 @@ FEATURE_COLUMNS = [
 CATEGORICAL_FEATURES: set[str] = {
     # ── Previously handled ────────────────────────────────────
     "candle.isBullish",
-    "context.signalType",
+    "type",
     "context.timeframe",
     "context.marketRegime",
     "context.preset",
@@ -94,6 +97,8 @@ CATEGORICAL_FEATURES: set[str] = {
     "structure.nearestFvgBias",
     # ── Signals & Crossovers (Discrete Values) ────────────────
     "momentum.waveTrendCross",
+    "momentum.rsi_divergence",
+    "trend.ema50_sma200_crossover",
     "trend.kernelRateOfChange",
     "trend.kernelCrossoverSignal",
     "lorentzian.distanceTrend",

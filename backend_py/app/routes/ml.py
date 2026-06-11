@@ -25,7 +25,7 @@ from app.tasks.ml_retraining import retrain_ml_model
 router = APIRouter(prefix="/api/ml", tags=["ML"])
 
 class ExtractRequest(BaseModel):
-    min_signals: int = 60
+    min_signals: int = 200
     source: str = "combined"
 
 class TrainRequest(BaseModel):

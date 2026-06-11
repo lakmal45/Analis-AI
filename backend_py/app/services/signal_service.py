@@ -1114,6 +1114,7 @@ def generate_signal_from_klines(
         )
 
     # 3. ML Inference & Accuracy Guardrails
+    snapshot["type"] = final_type
     prediction = None
     run_ml = ml_enabled and active_validation_mode in ("rules_plus_ml", "full_live_like")
     if run_ml:
@@ -1137,6 +1138,7 @@ def generate_signal_from_klines(
             )
             if guardrail["should_abstain"]:
                 final_type = "HOLD"
+                snapshot["type"] = "HOLD"
                 final_confidence = min(final_confidence, 55)
                 reasons_str = "; ".join(guardrail["reasons"])
                 rule_result["reasoning"] += f" Accuracy guardrail forced HOLD: {reasons_str}."
@@ -1158,6 +1160,7 @@ def generate_signal_from_klines(
             )
             if prob < MIN_ML_PROBABILITY:
                 final_type = "HOLD"
+                snapshot["type"] = "HOLD"
                 final_confidence = min(final_confidence, 55)
                 rule_result["reasoning"] += f" ML probability {prob:.2f} too low."
 
@@ -1318,6 +1321,7 @@ async def generate_signal(
         )
 
     # 4. ML Inference & Accuracy Guardrails
+    snapshot["type"] = rule_result["type"]
     prediction = None
     if active_validation_mode in ("rules_plus_ml", "full_live_like"):
         from app.services.ml_inference_service import get_ml_prediction
@@ -1351,6 +1355,7 @@ async def generate_signal(
         )
         if guardrail["should_abstain"]:
             final_type = "HOLD"
+            snapshot["type"] = "HOLD"
             final_confidence = min(final_confidence, 55)
             reasons_str = "; ".join(guardrail["reasons"])
             rule_result["reasoning"] += f" Accuracy guardrail forced HOLD: {reasons_str}."

@@ -18,16 +18,16 @@ async def retrain_ml_model() -> None:
     
     try:
         # 1. Export dataset
-        export_result = await export_training_dataset(min_signals=60)
+        export_result = await export_training_dataset(min_signals=200)
         if not export_result["success"]:
             logger.warning(f"Skipping ML retraining: {export_result['message']}")
             return
             
-        dataset_path = export_result["path"]
+        dataset_path = export_result["csvPath"]
         logger.info(f"Dataset exported with {export_result['count']} samples to {dataset_path}")
         
         # 2. Train model
-        logger.info("Training XGBoost + Lorentzian KNN ensemble...")
+        logger.info("Training XGBoost model...")
         bundle, metadata = train_model(
             dataset_path=dataset_path,
             notes="Auto-retraining job"
